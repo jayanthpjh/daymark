@@ -32,6 +32,7 @@ async function readState() {
     state.tasks ||= [];
     state.applications ||= [];
     state.answers ||= [];
+    state.answerPackSetup ||= false;
     state.profile ||= { name: '', email: '', headline: '', resumeName: '', resumeText: '', roleSearch: '', locationSearch: '' };
     return state;
   } catch {
@@ -158,6 +159,28 @@ async function extractResume(file) {
   text = cleanText(text.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n'), 60_000).trim();
   if (!text) throw new Error('No selectable text was found. This may be a scanned PDF; use a text-based resume or paste its text into your profile.');
   return { name, path: target, text };
+}
+
+function parseResumeProfile(text) {
+  const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  const joined = lines.join('\n');
+  const email = joined.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] || '';
+  const phone = joined.match(/(?:\+?\d[\d().\s-]{7,}\d)/)?.[0]?.replace(/\s+/g, ' ').trim() || '';
+  const linkedin = joined.match(/(?:https?:\/\/)?(?:www\.)?linkedin\.com\/in\/[a-z0-9_%/-]+/i)?.[0] || '';
+  const name = lines.slice(0, 8).find(line => line.length <= 70 && !/@|https?:\/\//i.test(line) && !/resume|curriculum vitae/i.test(line) && /^[\p{L}][\p{L} .'-]+$/u.test(line)) || '';
+  const section = (names, nextNames) => {
+    const start = lines.findIndex(line => names.some(name => new RegExp(`^${name}\\s*:?$`, 'i').test(line)));
+    if (start < 0) return '';
+    const end = lines.findIndex((line, index) => index > start && nextNames.some(name => new RegExp(`^${name}\\s*:?$`, 'i').test(line)));
+    return lines.slice(start + 1, end < 0 ? undefined : end).join('\n');
+  };
+  const skills = section(['skills', 'technical skills', 'core competencies', 'technologies'], ['experience', 'work experience', 'professional experience', 'employment', 'education', 'projects']);
+  const workHistory = section(['experience', 'work experience', 'professional experience', 'employment history'], ['education', 'technical skills', 'skills', 'certifications', 'projects', 'volunteer']);
+  const education = section(['education', 'academic background'], ['experience', 'work experience', 'skills', 'technical skills', 'certifications', 'projects']);
+  const headline = lines.slice(0, 8).find(line => line !== name && line.length > 4 && line.length <= 140 && !/@|https?:\/\/|\+?\d[\d(). -]{7,}/.test(line)) || '';
+  const titleCandidates = lines.slice(0, 100).filter(line => /\b(engineer|developer|designer|analyst|manager|scientist|architect|consultant|specialist|director|product owner|researcher)\b/i.test(line) && line.length <= 90);
+  const roleSearch = [...new Set(titleCandidates)].slice(0, 5).join(', ');
+  return { name, phone, linkedin: linkedin ? (/^https?:\/\//i.test(linkedin) ? linkedin : `https://${linkedin}`) : '', headline, skills, workHistory, education, roleSearch };
 }
 
 function normalizeJob(item) {
@@ -583,8 +606,10 @@ const server = http.createServer(async (req, res) => {
       state.profile.resumeName = result.name;
       state.profile.resumePath = result.path;
       state.profile.resumeText = result.text;
+      const parsed = parseResumeProfile(result.text);
+      for (const [key, value] of Object.entries(parsed)) if (value && !String(state.profile[key] || '').trim()) state.profile[key] = value;
       await writeState(state);
-      return send(res, 200, { resumeName: result.name, extractedCharacters: result.text.length, preview: result.text.slice(0, 500) });
+      return send(res, 200, { resumeName: result.name, extractedCharacters: result.text.length, preview: result.text.slice(0, 500), parsed, profile: { ...state.profile, resumeText: '[saved locally]' } });
     }
     if (req.method === 'POST' && url.pathname === '/api/answers') {
       const body = await readBody(req, 100_000);
@@ -594,6 +619,23 @@ const server = http.createServer(async (req, res) => {
       state.answers.unshift(answer);
       await writeState(state);
       return send(res, 201, { answer });
+    }
+    if (req.method === 'POST' && url.pathname === '/api/answer-pack/setup') {
+      const body = await readBody(req, 40_000);
+      const state = await readState();
+      const items = Array.isArray(body.answers) ? body.answers : [];
+      const saved = [];
+      for (const item of items.slice(0, 12)) {
+        const question = cleanText(item.question, 500).trim();
+        const answer = cleanText(item.answer, 3000).trim();
+        if (!question || !answer) continue;
+        const existing = state.answers.find(entry => entry.question.toLowerCase() === question.toLowerCase());
+        if (existing) { existing.answer = answer; existing.updatedAt = new Date().toISOString(); saved.push(existing); }
+        else { const entry = { id: randomUUID(), question, answer, updatedAt: new Date().toISOString() }; state.answers.unshift(entry); saved.push(entry); }
+      }
+      state.answerPackSetup = true;
+      await writeState(state);
+      return send(res, 200, { saved: saved.length, answerPackSetup: true, answers: state.answers });
     }
     if (req.method === 'POST' && url.pathname === '/api/tasks/fill') {
       const body = await readBody(req, 20_000);
