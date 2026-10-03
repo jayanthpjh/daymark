@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#f5f6f7" />
+  <title>Daymark — Your job search, in motion</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <a class="brand" href="#jobs" aria-label="Daymark home"><span class="brand-mark"><i></i><i></i><i></i><i></i></span><span>daymark<span class="brand-period">.</span></span></a>
+      <div class="workspace-label">WORKSPACE <span>LOCAL</span></div>
+      <nav class="main-nav" aria-label="Main navigation">
+        <button class="nav-item active" data-page="jobs"><span class="nav-icon" data-icon="compass"></span><span>Discover</span><span class="nav-count" id="nav-jobs-count">06</span></button>
+        <button class="nav-item" data-page="applications"><span class="nav-icon" data-icon="layers"></span><span>Applications</span><span class="nav-count" id="nav-app-count">00</span></button>
+        <button class="nav-item" data-page="profile"><span class="nav-icon" data-icon="user"></span><span>My profile</span></button>
+        <button class="nav-item" data-page="answers"><span class="nav-icon" data-icon="message"></span><span>Answer pack</span><span class="nav-dot"></span></button>
+        <button class="nav-item" data-page="inbox"><span class="nav-icon" data-icon="mail"></span><span>Inbox</span></button>
+      </nav>
+      <div class="sidebar-bottom">
+        <button class="nav-item" data-page="settings"><span class="nav-icon" data-icon="settings"></span><span>Settings</span></button>
+        <div class="worker-card"><div class="worker-top"><span class="status-pulse"></span><span id="worker-label">Worker ready</span><button class="icon-button tiny" title="Worker details" data-page="settings" data-icon="arrow"></button></div><p>Runs on this Mac while it’s awake.</p><div class="worker-state"><span id="service-state">Local mode</span><span class="worker-divider"></span><span>Private by default</span></div></div>
+        <div class="account-row"><div class="avatar" id="avatar">JD</div><div class="account-copy"><strong id="account-name">Your workspace</strong><span>Personal account</span></div><button class="icon-button" title="Open settings" data-page="settings" data-icon="dots"></button></div>
+      </div>
+    </aside>
+    <main class="main-area">
+      <header class="topbar"><button class="mobile-menu icon-button" id="menu-toggle" aria-label="Open menu" data-icon="menu"></button><div class="breadcrumb"><span>Workspace</span><span class="crumb-slash">/</span><strong id="current-section">Discover</strong></div><div class="top-actions"><span class="today-label" id="today-label"></span><button class="help-button" data-page="settings"><span data-icon="help"></span> Help</button></div></header>
+      <div class="page-wrap" id="page-wrap"></div>
+    </main>
+  </div>
+  <div id="toast-region" class="toast-region" aria-live="polite"></div>
+  <dialog id="job-dialog" class="job-dialog"></dialog>
+  <script src="/app.js" defer></script>
+</body>
+</html>
