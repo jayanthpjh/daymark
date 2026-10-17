@@ -13,7 +13,7 @@ One Ampere A1 VM (arm64, 4 OCPU / 24 GB) runs everything: API, browser worker, P
 - **Use a Proton account separate from any personal one** if you want to keep application mail apart. Check which account `APPLICATION_EMAIL` and `PROTON_BRIDGE_USER` belong to.
 - **OCI upgraded to Pay-As-You-Go.** Always Free resources stay free, and Oracle stops reclaiming idle instances. Set a $1 budget alert. If A1 says "out of host capacity", retry in another availability domain.
 - **Tailscale account** and the app on your Mac and phone.
-- **A private GitHub repo.** The project is not a git repo yet: `git init`, commit, push.
+- **A private GitHub repo.** The project is already a local git repo with commits and no remote: create an empty private repo on GitHub, then `git remote add origin <url>` and `git push -u origin main`.
 
 ## 1. Create the VM
 Shape `VM.Standard.A1.Flex`, 4 OCPU, 24 GB, Ubuntu 24.04, 50 GB boot volume, **no public inbound ports** in the security list. Paste `scripts/oci/cloud-init.yaml` into the cloud-init box after replacing `TS_AUTHKEY` with a one-time Tailscale key. Then `ssh ubuntu@daymark` over Tailscale.

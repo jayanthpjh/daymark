@@ -46,13 +46,14 @@ It runs locally today (Node, PostgreSQL, Redis, Playwright). The next milestone 
 | F10 | Calendar: parse invites with ical.js, show an agenda, save RSVP replies as drafts. |
 | F11 | Tracker: statuses per application; remove or change records (with backup first); handle expired jobs. |
 | F12 | Assistant: reads state and proposes actions; consent, accuracy approvals and settings are never available to it. |
+| F13 | Language model layer: JSON-only calls routed between a hosted model (NVIDIA) and a self-hosted model (Ollama), with automatic fallback to the other provider and no calls for sensitive questions (section 4.6). |
 
 ### 3.2 Non-functional
 
 | Area | Requirement |
 |---|---|
 | Safety | Review-before-submit on by default; auto-apply off; identity facts never invented. |
-| Privacy | Personal data stays on the applicant's machine or private VM; nothing sent to third parties except the employer and the job-site requests needed. |
+| Privacy | Personal data stays on the applicant's machine or private VM, with **one disclosed exception**: resume text, job descriptions and non-sensitive form questions are sent to the hosted NVIDIA model when it is the chosen provider (section 4.6). Legal, consent and demographic questions are never sent to any model. Otherwise only the employer and the public job-site requests are contacted. |
 | Politeness | Per-host pacing, backoff on HTTP 429, skip a host after repeated refusals, 120 s deadline per board. |
 | Durability | State in PostgreSQL with a revision counter; backup before any destructive change. |
 | Security | Secrets in environment or secret store, never in git; assistant approvals bound to a fingerprint with a 10-minute TTL. |
@@ -74,7 +75,10 @@ It runs locally today (Node, PostgreSQL, Redis, Playwright). The next milestone 
         |
  PostgreSQL (daymark_state + revision)      Redis / BullMQ (task queue)
         |
- Worker (worker-runtime.mjs) -- Playwright autofill, LaTeX resume (Tectonic), LLM client
+ Worker (worker-runtime.mjs) -- Playwright autofill, LaTeX resume (Tectonic)
+
+ API server --> llm-client.mjs --> hosted NVIDIA model (nemotron-3-super-120b)   [cloud]
+                              \--> Ollama, qwen3:8b (daymark-llm container)      [OCI VM, CPU]
 ```
 
 ### 4.2 Module map
@@ -115,6 +119,48 @@ It runs locally today (Node, PostgreSQL, Redis, Playwright). The next milestone 
 
 Docker naming is fixed by `docs/NAMING.md`: project `daymark`, containers `daymark-*`, volumes `daymark-postgres-data` and `daymark-redis-data`, network `daymark-net`.
 
+### 4.6 Language model layer
+
+The first version of this document left the models out. They are specified in `llm-client.mjs`, `nvidia-client.mjs`, `docker-compose.oci.yml` and `docker/llm-entrypoint.sh`.
+
+**Providers**
+
+| | Hosted | Self-hosted |
+|---|---|---|
+| Model | `nvidia/nemotron-3-super-120b-a12b` (hard-coded in `nvidia-client.mjs`) | `qwen3:8b` by default (`LLM_MODEL`) |
+| Endpoint | `https://integrate.api.nvidia.com/v1/chat/completions`, with polling on HTTP 202 | `http://llm:11434/v1/chat/completions` (Ollama 0.12.6, OpenAI-compatible) |
+| Credential | `NVIDIA_API_KEY` (Settings or `.env`) | none; enabled by setting `LLM_BASE_URL` |
+| Where it runs | NVIDIA cloud | OCI VM, CPU only (no GPU on Always Free), container `daymark-llm`, 9 GB limit, 8192 token context, one request at a time |
+| Timeout | 180 s, plus up to 60 polls of 2 s | 120 s (`LLM_TIMEOUT_MS`) |
+| Local setup | Mac: hosted only (no `LLM_BASE_URL`) | OCI: both providers |
+
+**Routing** (`llmRoute`): each task has a preferred provider, and the other is the fallback. If only one is configured, only that one is used. With neither, the call fails with a message to add a key or a local model.
+
+| Task | Used by | Preferred |
+|---|---|---|
+| `tailor` | Resume tailoring (`server.mjs:651`, `:1925`) | Hosted |
+| `resume` (default) | Reading an uploaded resume into fields (`server.mjs:1654`, up to 10,000 tokens) | Hosted |
+| `answers` | Form-question answers and drafts (`server.mjs:719`, `:2151`, `:2166`) | Local |
+| `mail` | Mailbox assistant drafts (`server.mjs:1389`) | Local |
+| `cover`, `classify`, `embed` | Declared, **no caller yet** | n/a |
+
+**Safeguards already in code:** output must be valid JSON or the call fails and the saved documents stay unchanged; `sensitive` questions throw before any network call (tested in `tests/llm-client.test.mjs`); the hosted key is read from settings, never logged.
+
+**Gaps found in this review**
+
+| # | Finding | Effect |
+|---|---|---|
+| L1 | Local CPU speed was never measured. A 4-core ARM VM running an 8B model is likely a few tokens per second (estimate, not measured). `answers` asks for up to 800 tokens and `mail` up to 1,500, against a 120 s timeout. | Local-first tasks may time out and fall back to the hosted model, or feel slow. |
+| L2 | `qwen3:4b` and `nomic-embed-text` are downloaded but nothing uses them (`embed` has no caller; no setting selects the 4B model). | About 3 GB of disk and pull time for nothing. |
+| L3 | The hosted model name is hard-coded. | A model retirement needs a code change. |
+| L4 | Local calls send `chat_template_kwargs: {enable_thinking:false}`, which Ollama's OpenAI endpoint may ignore. | Qwen3 may spend tokens on hidden reasoning. Unverified. |
+| L5 | `resume` parsing requests 10,000 tokens but the local context is 8,192. | If the hosted call fails, the local fallback cannot succeed for long resumes. |
+| L6 | Worker containers get `.env.oci` but not `LLM_BASE_URL`; only the API container has it. | Fine today because only the API calls models; any future worker call would silently go hosted-only. |
+| L7 | No per-task override UI (`overrides` exists in `llmRoute`, nothing passes it). | Provider choice is fixed by the table above. |
+| L8 | Privacy statement was wrong in the first draft (fixed in section 3.2). | Resume content leaves the machine when the hosted model is used. |
+
+The fixes are work package WP-3 in `docs/IMPLEMENTATION-PLAN.md`.
+
 ## 5. Status
 
 | Area | State |
@@ -150,12 +196,16 @@ Docker naming is fixed by `docs/NAMING.md`: project `daymark`, containers `dayma
 | R6 | Only 7 ATS readers (Tsenta has 30+) | Phase G, pending approval |
 | R7 | Secrets exposure on a public host | Tailscale-only access, secrets outside git, checklist |
 | R8 | Data loss on migration | Backups (two DB dumps and a data archive in `data/backups`) before each step |
+| R9 | Local model too slow on CPU (L1) | Benchmark first (WP-3); choose the 4B model or hosted-first for slow tasks based on measured numbers |
+| R10 | Hosted model sees resume content; key leak or provider outage | Disclosed in privacy row; key stored `0600`, rotate after the move; local fallback keeps the system working |
+| R11 | Memory: container limits total about 15.6 GB of 24 GB, with the model taking 9 GB | Acceptable; watch with `docker stats` during the first full run |
 
 **Open decisions for the reviewer**
 1. Approve phase G (SearXNG container and five new ATS readers), or defer?
 2. Always-on host: OCI only, or keep the Mac as a fallback?
 3. Rename the project folder `let-us-workm-x20` to `daymark` after this session?
-4. One-letter variable names remain in older files (`docs/NAMING.md` lists this as a known gap). Clean up in bulk, or only when touched?
+4. Models on OCI: keep hosted-first for tailoring and local-first for answers and mail (current), or go hosted-only until the local model is measured?
+5. One-letter variable names remain in older files (`docs/NAMING.md` lists this as a known gap). Clean up in bulk, or only when touched?
 
 ## 8. Verification
 
