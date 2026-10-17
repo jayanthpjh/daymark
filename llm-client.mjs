@@ -1,14 +1,15 @@
-// Routes JSON LLM calls between the hosted NVIDIA model and a self-hosted OpenAI-compatible model (Ollama on OCI).
-// Heavy persuasive writing prefers NVIDIA; light classification and drafting prefers the local model; each falls back to the other.
+// Routes JSON LLM calls between a self-hosted OpenAI-compatible model (Ollama on OCI) and the hosted NVIDIA model.
+// The self-hosted model goes first for every task, so resume text stays on the VM; NVIDIA is the fallback when the local
+// model is missing, slow or returns invalid JSON. LLM_HOSTED_FIRST (comma-separated task names) moves chosen tasks back to NVIDIA first.
 import { parseNvidiaResult, requestNvidiaJson } from './nvidia-client.mjs';
 
 export const LLM_TASKS = Object.freeze(['resume', 'cover', 'tailor', 'answers', 'mail', 'classify', 'embed']);
-const LOCAL_FIRST = new Set(['answers', 'mail', 'classify']);
 
 export function llmConfig(env = process.env) {
   const baseUrl = String(env.LLM_BASE_URL || '').trim().replace(/\/+$/, '');
   if (baseUrl && !/^https?:\/\/[^\s/]+(?::\d+)?(?:\/[^\s]*)?$/.test(baseUrl)) throw new Error('LLM_BASE_URL must be an http(s) URL.');
-  return { local: baseUrl ? { baseUrl, model: String(env.LLM_MODEL || 'qwen3:8b'), key: String(env.LLM_API_KEY || ''), timeoutMs: Number(env.LLM_TIMEOUT_MS) || 120000 } : null, nvidiaKey: String(env.NVIDIA_API_KEY || '') };
+  const hostedFirst = new Set(String(env.LLM_HOSTED_FIRST || '').split(',').map(name => name.trim()).filter(Boolean));
+  return { local: baseUrl ? { baseUrl, model: String(env.LLM_MODEL || 'qwen3:8b'), key: String(env.LLM_API_KEY || ''), timeoutMs: Number(env.LLM_TIMEOUT_MS) || 120000 } : null, nvidiaKey: String(env.NVIDIA_API_KEY || ''), hostedFirst };
 }
 
 export function llmRoute(task, config, overrides = {}) {
@@ -16,7 +17,7 @@ export function llmRoute(task, config, overrides = {}) {
   const chosen = overrides[task];
   const available = [config.local && 'local', config.nvidiaKey && 'nvidia'].filter(Boolean);
   if (!available.length) return [];
-  const first = chosen && available.includes(chosen) ? chosen : (LOCAL_FIRST.has(task) ? 'local' : 'nvidia');
+  const first = chosen && available.includes(chosen) ? chosen : (config.hostedFirst?.has(task) ? 'nvidia' : 'local');
   const primary = available.includes(first) ? first : available[0];
   return [primary, ...available.filter(item => item !== primary)];
 }

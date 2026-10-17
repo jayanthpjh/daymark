@@ -134,15 +134,17 @@ The first version of this document left the models out. They are specified in `l
 | Timeout | 180 s, plus up to 60 polls of 2 s | 120 s (`LLM_TIMEOUT_MS`) |
 | Local setup | Mac: hosted only (no `LLM_BASE_URL`) | OCI: both providers |
 
-**Routing** (`llmRoute`): each task has a preferred provider, and the other is the fallback. If only one is configured, only that one is used. With neither, the call fails with a message to add a key or a local model.
+**Routing** (`llmRoute`): **the self-hosted model goes first for every task and NVIDIA is the fallback** (changed 2026-10-17; before, tailoring and resume reading went to NVIDIA first). If only one provider is configured, only that one is used (the Mac setup stays NVIDIA-only). With neither, the call fails with a message to add a key or a local model. `LLM_HOSTED_FIRST=tailor,resume` moves named tasks back to NVIDIA first without a code change.
 
-| Task | Used by | Preferred |
+| Task | Used by | Order now |
 |---|---|---|
-| `tailor` | Resume tailoring (`server.mjs:651`, `:1925`) | Hosted |
-| `resume` (default) | Reading an uploaded resume into fields (`server.mjs:1654`, up to 10,000 tokens) | Hosted |
-| `answers` | Form-question answers and drafts (`server.mjs:719`, `:2151`, `:2166`) | Local |
-| `mail` | Mailbox assistant drafts (`server.mjs:1389`) | Local |
+| `tailor` | Resume tailoring (`server.mjs:651`, `:1925`) | Local, then NVIDIA |
+| `resume` (default) | Reading an uploaded resume into fields (`server.mjs:1654`, up to 10,000 tokens) | Local, then NVIDIA |
+| `answers` | Form-question answers and drafts (`server.mjs:719`, `:2151`, `:2166`) | Local, then NVIDIA |
+| `mail` | Mailbox assistant drafts (`server.mjs:1389`) | Local, then NVIDIA |
 | `cover`, `classify`, `embed` | Declared, **no caller yet** | n/a |
+
+**Privacy effect:** with the local model first, resume text reaches NVIDIA only when the local call fails or is invalid. Section 3.2 still discloses it.
 
 **Safeguards already in code:** output must be valid JSON or the call fails and the saved documents stay unchanged; `sensitive` questions throw before any network call (tested in `tests/llm-client.test.mjs`); the hosted key is read from settings, never logged.
 
@@ -160,6 +162,26 @@ The first version of this document left the models out. They are specified in `l
 | L8 | Privacy statement was wrong in the first draft (fixed in section 3.2). | Resume content leaves the machine when the hosted model is used. |
 
 The fixes are work package WP-3 in `docs/IMPLEMENTATION-PLAN.md`.
+
+**Model recommendation for the dedicated VM** (research done 2026-10-17 from the Ollama library and NVIDIA's public model list; speeds are *not measured* on this VM)
+
+The VM has 4 ARM cores and no GPU. On CPU, speed depends mostly on how many parameters are read per token, so a model with few *active* parameters answers much faster than a dense model of the same file size. The container has 9 GB.
+
+| Rank | Model (Ollama tag) | Size | Why it is on the list | Main doubt |
+|---|---|---|---|---|
+| 1 | `granite4.2:8b` | 5.3 GB | IBM states structured JSON output, tool use and RAG as design targets; Apache 2.0. Fits `answers` and `mail`, which must return JSON. | CPU speed unknown |
+| 2 | `qwen3.5:9b` (or `:4b`, 3.3 to 4.0 GB) | 6.6 to 7.6 GB | Newest Qwen at this size, 256K context, tools and thinking. Best bet for tailoring quality. | Dense 9B is the slowest on this list; the 4B is the speed compromise |
+| 3 | `gemma4:e4b` (or `:e2b`, 4.6 GB) | 6.6 GB | Google's "effective 4B" design aims at low-memory devices; tools and thinking. | Needs a benchmark to confirm JSON discipline |
+| 4 | `lfm2.5:8b-a1b` | 5.2 GB | Mixture-of-experts with about 1B parameters active per token, built for fast tool calling on small hardware. The likely speed winner. | Quality below the dense models; good for `mail` and short answers |
+| Baseline | `qwen3:8b` (current) | 5.2 GB | What the compose file pulls today, so the new models must beat it. | A year old, 40K context |
+
+Not recommended here: `qwen3.5:35b`, `gemma4:26b`, `nemotron-3-nano:30b`, `granite4.2:30b` (16 to 24 GB files; they do not fit a 9 GB container). `nemotron-3-nano:4b` (2.8 GB) is a lighter option from the same maker as the fallback.
+
+**Starting choice, to be confirmed by the benchmark:** host `granite4.2:8b` for everything, plus `qwen3.5:9b` only if tailoring quality needs it. If `granite4.2:8b` is too slow, drop to `lfm2.5:8b-a1b`. Host **one model at a time** (`OLLAMA_MAX_LOADED_MODELS=1`), because two resident models do not fit.
+
+**Version risk:** the compose file pins Ollama `0.12.6`. The latest release is `v0.40.5` (2026-10-14). The newer models above probably need a newer Ollama (not confirmed from release notes). Bump the pin and test on arm64 before pulling them.
+
+**Fallback model (hosted):** `nvidia/nemotron-3-super-120b-a12b` is still in NVIDIA's public model list, so keep it as the default fallback. Same list also shows `google/gemma-4-31b-it` and `nvidia/nemotron-3.5-lightning-30b-a3b` as alternatives; whether your key can use them is untested.
 
 ## 5. Status
 
