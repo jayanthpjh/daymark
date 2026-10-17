@@ -24,7 +24,7 @@ scp daymark-db.dump daymark-data.tgz <vm-tailscale-name>:~/
 
 ## 3. On the VM: restore
 ```bash
-sudo tar -xzf ~/daymark-data.tgz -C /srv/daymark --strip-components=1 --one-top-level=data
+sudo tar -xzf ~/daymark-data.tgz -C /srv/daymark   # the archive already starts with data/, so files land in /srv/daymark/data
 docker exec -i daymark-postgres pg_restore -U daymark -d daymark --no-owner --clean --if-exists < ~/daymark-db.dump
 ```
 
