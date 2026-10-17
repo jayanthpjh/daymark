@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+node_modules
+data
+outputs
+.git
+.claude
+.codex
+.DS_Store
+tests
+work
+docs
+PROGRESS.md
+APPLICATION-REPAIR-REPORT.md

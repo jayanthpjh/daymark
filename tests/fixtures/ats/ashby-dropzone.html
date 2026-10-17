@@ -1,0 +1,7 @@
+<!doctype html><body><div class="ashby-application-form-field-entry">
+<label>Resume *</label>
+<div class="dropzone" style="border:2px dashed #888;padding:20px"><p>Drop a file here or</p><button type="button" onclick="document.getElementById('rf').click()">Upload File</button>
+<input id="rf" type="file" style="display:none" accept=".pdf"><span id="fname"></span></div>
+<script>rf.onchange=()=>{fname.textContent=rf.files[0].name}</script>
+</div>
+<label for="em">Email *</label><input id="em" type="email" required></body>

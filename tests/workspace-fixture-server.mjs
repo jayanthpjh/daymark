@@ -1,0 +1,32 @@
+import {createPdf,createDocx} from '../resume-export.mjs';
+// Synthetic UI fixtures only. No real profile, credential, employer request or submission.
+import fs from 'node:fs/promises';import os from 'node:os';import path from 'node:path';import {spawn} from 'node:child_process';
+const dir=await fs.mkdtemp(path.join(os.tmpdir(),'daymark-ui-fixture-'));
+const now=new Date().toISOString();
+const resume='Alex Example\nalex@example.test\n\nSUMMARY\nData engineer building reliable systems.\n\nSKILLS\nPython, SQL\n\nEXPERIENCE\nExample Studio | Data Engineer | 2022–2025\n• Built SQL validation for existing pipelines.\n• Maintained Python ingestion jobs.\n\nEDUCATION\nExample University | BS Computer Science';
+await fs.mkdir(path.join(dir,'files'));
+await createPdf('Resume',resume,path.join(dir,'files','resume.pdf'),'Alex Example');
+await createDocx('Resume',resume,path.join(dir,'files','resume.docx'),'Alex Example');
+const letter='Alex Example\n\nDear hiring team,\n\nThis is a synthetic cover-letter fixture for interface testing. It is never sent to an employer.\n\nAlex Example';
+await createDocx('Cover letter',letter,path.join(dir,'files','cover.docx'),'Alex Example');
+const cases=['queued','preparing','signin','questions','review','confirmed','uncertain','failed','recorded','skipped'];
+const jobs=[],tasks=[],applications=[];
+const stages={queued:'Queued for processing',preparing:'Preparing documents',signin:'Needs authentication',questions:'Needs your answer',review:'Awaiting your review',confirmed:'Submitted',uncertain:'Submission unconfirmed',failed:'Needs verification',recorded:'Recorded',skipped:'Skipped'};
+for(const [index,kind] of cases.entries()){
+ const jobId=`fixture-${kind}`,p=`00000000-0000-4000-8000-${String(index*2).padStart(12,'0')}`,f=`00000000-0000-4000-8000-${String(index*2+1).padStart(12,'0')}`;
+ jobs.push({id:jobId,company:'Example Studio',role:`Senior Data Engineer · ${kind}`,source:'Greenhouse',url:'https://jobs.example.test/application',description:'SYNTHETIC TEST ROLE\n\nBuild reliable SQL and Python pipelines. Work with engineering teams to improve data quality, observability and testing.\n\nRequirements\nExperience with Python, SQL and production data pipelines.\n\nThis is a local interface fixture. No application is sent.',match:82,first_seen_at:now});
+ const prepare={id:p,jobId,type:'prepare',company:'Example Studio',role:'Senior Data Engineer',createdAt:now,updatedAt:now,status:kind==='queued'?'queued':kind==='preparing'?'running':'ready_for_review',reviewPolicy:'final',progress:kind==='preparing'?20:100};
+ if(!['queued','preparing'].includes(kind))prepare.artifacts={resume,coverLetter:'',approved:kind!=='review',resumeVersion:0,changes:[],proposedAdditions:[],approvedAdditions:[],versions:[],sourceProfile:{name:'Alex Example',email:'alex@example.test'},resumePdf:path.join(dir,'files','resume.pdf'),resumeDocx:path.join(dir,'files','resume.docx')};
+ if(kind==='confirmed'){prepare.artifacts.coverLetter=letter;prepare.artifacts.coverDocx=path.join(dir,'files','cover.docx');}
+ tasks.push(prepare);if(['queued','preparing'].includes(kind))continue;
+ const fill={id:f,parentTaskId:p,jobId,type:'fill',company:'Example Studio',role:'Senior Data Engineer',status:['confirmed','recorded','skipped'].includes(kind)?'completed':kind==='failed'?'failed':'needs_you',progress:kind==='signin'?15:95,stage:stages[kind],message:`Synthetic ${kind} checkpoint. No employer is contacted.`,createdAt:now,updatedAt:now,authStatus:kind==='signin'?'authentication':'authenticated',finalReviewReady:kind==='review',reviewState:{required:true,kind:kind==='signin'?'authentication_required':kind==='questions'?'answers_needed':kind==='review'?'final_review_required':'user_action_required'},checkpoint:{id:'cp-'+kind,step:'Application questions',pauseReason:kind==='signin'?'authentication':kind==='questions'?'answers':'final_review',questions:[{id:'q-one',label:'Describe your relevant SQL experience',type:'textarea',required:true,value:kind==='questions'?'':'Maintained SQL validation for existing pipelines.',options:[],manual:false}],unresolvedIds:kind==='questions'?['q-one']:[]},filledSteps:kind==='signin'?[]:[{step:'Personal information',answers:[{label:'First name',value:'Alex',source:'profile'},{label:'Last name',value:'Example',source:'profile'},{label:'Email',value:'alex@example.test',source:'profile'},{label:'LinkedIn profile',value:'https://linkedin.com/in/example',source:'profile'}]},{step:'Application questions',answers:[{label:'Describe your relevant SQL experience',value:'Maintained SQL validation for existing pipelines.',source:'you'}]}],receipt:{filled:5,skipped:[],ai:0,generic:0},activity:[{status:'running',message:'Checking the saved ATS session',at:now},{status:'needs_you',message:stages[kind],at:now}]};
+ if(kind==='uncertain'){fill.submitAttemptedAt=now;fill.submissionOutcome='uncertain';fill.finalReviewReady=false;}
+ if(kind==='confirmed'){fill.submissionOutcome='confirmed';fill.submittedAt=now;}
+ if(['recorded','skipped'].includes(kind))applications.push({id:jobId,jobId,company:'Example Studio',role:'Senior Data Engineer',status:kind==='recorded'?'submitted':'skipped',manuallyUpdated:true,updatedAt:now});
+ tasks.unshift(fill);
+}
+await fs.writeFile(path.join(dir,'state.json'),JSON.stringify({jobs,tasks,applications,profile:{name:'Alex Example · test fixtures',email:'alex@example.test',resumeText:resume,masterResumeText:resume,roleSearch:'Data Engineer'},onboarding:{completed:true,profileConfirmed:true},preferences:{reviewBeforeSubmit:true,autoApply:{enabled:false}},answerPack:{completed:true,values:{}}}));
+await fs.writeFile(path.join(dir,'worker-heartbeat.json'),JSON.stringify({at:Date.now(),heartbeatAt:Date.now(),browserReady:true,taskQueue:'local-poller'}));
+const child=spawn(process.execPath,['server.mjs'],{cwd:process.cwd(),env:{...process.env,PORT:process.env.DAYMARK_FIXTURE_PORT||'4298',DAYMARK_ROLE:'api',DAYMARK_DATA_DIR:dir,DAYMARK_ENV_PATH:path.join(dir,'empty.env'),DAYMARK_DATABASE_URL:'',DAYMARK_REDIS_URL:'',DAYMARK_DISABLE_MAIL_FORWARDING:'true'},stdio:'inherit'});
+const pulse=setInterval(()=>fs.writeFile(path.join(dir,'worker-heartbeat.json'),JSON.stringify({at:Date.now(),heartbeatAt:Date.now(),browserReady:true,taskQueue:'local-poller'})).catch(()=>{}),3000);
+const stop=()=>{clearInterval(pulse);child.kill('SIGTERM');};process.on('SIGTERM',stop);process.on('SIGINT',stop);child.on('exit',async code=>{clearInterval(pulse);await fs.rm(dir,{recursive:true,force:true});process.exit(code||0);});

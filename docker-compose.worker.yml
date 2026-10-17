@@ -1,0 +1,128 @@
+# Local stack: PostgreSQL, Redis and the browser worker. Everything is named daymark-* so it is easy to find in Docker.
+name: daymark
+
+services:
+  postgres:
+    container_name: daymark-postgres
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: daymark
+      POSTGRES_USER: daymark
+      POSTGRES_PASSWORD: "${DAYMARK_POSTGRES_PASSWORD:?Run npm run worker:setup first}"
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - daymark-postgres-data:/var/lib/postgresql/data
+    mem_limit: 512m
+    shm_size: 128m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U daymark -d daymark"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  redis:
+    container_name: daymark-redis
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "96mb", "--maxmemory-policy", "noeviction"]
+    ports:
+      - "127.0.0.1:56379:6379"
+    volumes:
+      - daymark-redis-data:/data
+    mem_limit: 128m
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  application-worker:
+    container_name: daymark-worker
+    platform: linux/arm64
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+    init: true
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    user: "${DAYMARK_UID:?Run npm run worker:setup first}:${DAYMARK_GID:?Run npm run worker:setup first}"
+    env_file:
+      - path: .env.worker
+        required: true
+    environment:
+      DAYMARK_ROLE: worker
+      DAYMARK_DATA_DIR: "${DAYMARK_DATA_DIR:?Run npm run worker:setup first}"
+      DAYMARK_BROWSER_PROFILE_DIR: "${DAYMARK_DATA_DIR:?Run npm run worker:setup first}/docker-browser-profile-recovery"
+      DAYMARK_ATS_CREDENTIALS_PATH: /run/secrets/daymark-ats-credentials
+      DAYMARK_WORKER_PORT: "4174"
+      PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
+      HOME: /tmp
+      DISPLAY: :99
+    volumes:
+      - type: bind
+        source: ${DAYMARK_DATA_DIR:?Run npm run worker:setup first}
+        target: ${DAYMARK_DATA_DIR:?Run npm run worker:setup first}
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${DAYMARK_DATA_DIR:?Run npm run worker:setup first}/worker-control/ats-credentials-mask
+        target: ${DAYMARK_DATA_DIR:?Run npm run worker:setup first}/ats-credentials.json
+        read_only: true
+        bind:
+          create_host_path: false
+    secrets:
+      - source: ats_credentials
+        target: daymark-ats-credentials
+    ports:
+      - "127.0.0.1:6080:6080"
+    shm_size: 1gb
+    mem_limit: 4g
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:4174/_worker/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
+
+secrets:
+  ats_credentials:
+    file: ${DAYMARK_DATA_DIR:?Run npm run worker:setup first}/ats-credentials.json
+
+volumes:
+  daymark-postgres-data:
+    name: daymark-postgres-data
+  daymark-redis-data:
+    name: daymark-redis-data
+
+networks:
+  default:
+    name: daymark-net

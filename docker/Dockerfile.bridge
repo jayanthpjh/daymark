@@ -1,0 +1,21 @@
+# Proton Bridge for Linux, headless. Proton publishes no arm64 package, so it is built from source.
+# Verify BRIDGE_VERSION against https://github.com/ProtonMail/proton-bridge/releases before building.
+FROM golang:1.23-bookworm AS build
+ARG BRIDGE_VERSION=v3.21.2
+RUN apt-get update && apt-get install -y --no-install-recommends git make pkg-config libsecret-1-dev libfido2-dev libcbor-dev && rm -rf /var/lib/apt/lists/*
+RUN git clone --depth 1 --branch ${BRIDGE_VERSION} https://github.com/ProtonMail/proton-bridge.git /src
+WORKDIR /src
+RUN make build-nogui
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends pass gnupg libsecret-1-0 libfido2-1 socat ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=build /src/bridge /usr/local/bin/bridge
+COPY --from=build /src/proton-bridge /usr/local/bin/proton-bridge
+COPY docker/bridge-entrypoint.sh /usr/local/bin/bridge-entrypoint.sh
+RUN useradd -m -u 10001 bridge && chmod +x /usr/local/bin/bridge-entrypoint.sh
+USER bridge
+ENV HOME=/home/bridge
+VOLUME /home/bridge
+# Bridge listens on 127.0.0.1:1143 (IMAP) and :1025 (SMTP) inside the container; socat republishes them on the Docker network only.
+EXPOSE 2143 2025
+ENTRYPOINT ["/usr/local/bin/bridge-entrypoint.sh"]

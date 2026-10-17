@@ -1,0 +1,10 @@
+<!doctype html><body>
+<h1>Application</h1>
+<x-field id="host"></x-field>
+<label for="plain">Phone</label><input id="plain" type="tel">
+<script>
+customElements.define('x-field',class extends HTMLElement{connectedCallback(){
+  const root=this.attachShadow({mode:'open'});
+  root.innerHTML='<div><label for="fn">First name *</label><input id="fn" name="first"></div><div><span id="ln-l">Last name</span><input aria-labelledby="ln-l" name="last" required></div>';
+}});
+</script></body>

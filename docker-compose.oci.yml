@@ -1,0 +1,124 @@
+# Daymark on one OCI Ampere A1 VM (arm64). Every published port is bound to the Tailscale address only; nothing is public.
+# Start: docker compose --env-file .env.oci -f docker-compose.oci.yml up -d --build
+name: daymark
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: 10m, max-file: "3" }
+
+services:
+  postgres:
+    container_name: daymark-postgres
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: daymark
+      POSTGRES_USER: daymark
+      POSTGRES_PASSWORD: "${DAYMARK_POSTGRES_PASSWORD:?Run node scripts/setup-oci.mjs first}"
+    volumes: ["/srv/daymark/postgres:/var/lib/postgresql/data"]
+    mem_limit: 1g
+    shm_size: 128m
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U daymark -d daymark"], interval: 5s, timeout: 3s, retries: 12 }
+    logging: *logging
+
+  redis:
+    container_name: daymark-redis
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "96mb", "--maxmemory-policy", "noeviction"]
+    volumes: ["/srv/daymark/redis:/data"]
+    mem_limit: 128m
+    healthcheck: { test: ["CMD", "redis-cli", "ping"], interval: 5s, timeout: 3s, retries: 12 }
+    logging: *logging
+
+  # Proton Bridge reads the application Proton account over IMAP/SMTP. Internal network only; nothing here is public.
+  proton-bridge:
+    container_name: daymark-proton-bridge
+    build: { context: ., dockerfile: docker/Dockerfile.bridge }
+    restart: unless-stopped
+    command: ["run"]
+    volumes: ["/srv/daymark/bridge:/home/bridge"]
+    mem_limit: 512m
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    logging: *logging
+
+  llm:
+    container_name: daymark-llm
+    image: ollama/ollama:0.12.6
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/llm-entrypoint.sh"]
+    environment: { OLLAMA_NUM_PARALLEL: "1", OLLAMA_KEEP_ALIVE: 24h, OLLAMA_CONTEXT_LENGTH: "8192", LLM_MODELS: "${LLM_MODELS:-qwen3:8b qwen3:4b nomic-embed-text}" }
+    volumes: ["/srv/daymark/ollama:/root/.ollama", "./docker/llm-entrypoint.sh:/llm-entrypoint.sh:ro"]
+    mem_limit: 9g
+    healthcheck: { test: ["CMD", "ollama", "list"], interval: 20s, timeout: 10s, retries: 6, start_period: 60s }
+    logging: *logging
+
+  searxng:
+    container_name: daymark-search
+    image: searxng/searxng:latest
+    restart: unless-stopped
+    environment: { SEARXNG_SECRET: "${SEARXNG_SECRET:?Run node scripts/setup-oci.mjs first}" }
+    volumes: ["/srv/daymark/searxng:/etc/searxng"]
+    mem_limit: 256m
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    logging: *logging
+
+  daymark-api:
+    container_name: daymark-api
+    build: { context: ., dockerfile: docker/Dockerfile.api }
+    restart: unless-stopped
+    depends_on: { postgres: { condition: service_healthy }, redis: { condition: service_healthy }, proton-bridge: { condition: service_started } }
+    env_file: [.env.oci]
+    environment:
+      DAYMARK_ROLE: api
+      DAYMARK_HOST: 0.0.0.0
+      DAYMARK_DATA_DIR: /srv/daymark/data
+      DAYMARK_DATABASE_URL: "postgresql://daymark:${DAYMARK_POSTGRES_PASSWORD}@postgres:5432/daymark"
+      DAYMARK_REDIS_URL: redis://redis:6379/0
+      PROTON_BRIDGE_HOST: proton-bridge
+      PROTON_BRIDGE_PORT: "2143"
+      PROTON_BRIDGE_SMTP_PORT: "2025"
+      DAYMARK_BRIDGE_HOSTS: proton-bridge
+      LLM_BASE_URL: http://llm:11434
+      LLM_MODEL: "${LLM_MODEL:-qwen3:8b}"
+      SEARXNG_URL: http://searxng:8080
+    volumes: ["/srv/daymark/data:/srv/daymark/data", "/srv/daymark/secrets:/run/secrets:ro"]
+    ports: ["${TAILSCALE_IP:?Set TAILSCALE_IP in .env.oci}:4173:4173"]
+    mem_limit: 768m
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    logging: *logging
+
+  application-worker:
+    container_name: daymark-worker
+    platform: linux/arm64
+    build: { context: ., dockerfile: docker/Dockerfile.worker }
+    init: true
+    restart: unless-stopped
+    depends_on: { postgres: { condition: service_healthy }, redis: { condition: service_healthy } }
+    user: "${DAYMARK_UID:-1000}:${DAYMARK_GID:-1000}"
+    env_file: [.env.oci]
+    environment:
+      DAYMARK_ROLE: worker
+      DAYMARK_DATA_DIR: /srv/daymark/data
+      DAYMARK_BROWSER_PROFILE_DIR: /srv/daymark/data/docker-browser-profile
+      DAYMARK_DATABASE_URL: "postgresql://daymark:${DAYMARK_POSTGRES_PASSWORD}@postgres:5432/daymark"
+      DAYMARK_REDIS_URL: redis://redis:6379/0
+      DAYMARK_WORKER_PORT: "4174"
+      DAYMARK_ATS_CREDENTIALS_PATH: /run/secrets/daymark-ats-credentials
+      PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
+      HOME: /tmp
+      DISPLAY: ":99"
+    volumes: ["/srv/daymark/data:/srv/daymark/data", "/srv/daymark/secrets:/run/secrets:ro"]
+    ports: ["${TAILSCALE_IP}:6080:6080"]
+    shm_size: 1gb
+    mem_limit: 4g
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    logging: *logging
+
+networks:
+  default:
+    name: daymark-net

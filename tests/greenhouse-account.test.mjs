@@ -1,0 +1,6 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {greenhouseAccountVerified} from '../greenhouse-account.mjs';
+const mock=(url,body)=>{let closed=false;const probe={goto:async()=>{},url:()=>url,getByText:()=>({first:()=>({waitFor:async()=>{}})}),locator:()=>({innerText:async()=>body}),close:async()=>{closed=true}};return {page:{url:()=>'https://job-boards.greenhouse.io/example/jobs/1',context:()=>({newPage:async()=>probe})},closed:()=>closed}};
+test('verifies matching account on protected profile in the same context',async()=>{const m=mock('https://my.greenhouse.io/profile','Contact information alex@example.test');assert.equal(await greenhouseAccountVerified(m.page,'alex@example.test'),true);assert.equal(m.closed(),true)});
+test('rejects redirect, wrong account and anonymous profile',async()=>{for(const [url,body] of [['https://my.greenhouse.io/users/sign_in','Contact information alex@example.test'],['https://my.greenhouse.io/profile','Contact information other@example.test'],['https://my.greenhouse.io/profile','Sign in alex@example.test']]){const m=mock(url,body);assert.equal(await greenhouseAccountVerified(m.page,'alex@example.test'),false);assert.equal(m.closed(),true)}});

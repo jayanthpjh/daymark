@@ -1,0 +1,12 @@
+<!doctype html><html><body>
+<div class="field"><label for="skills">Skills *</label>
+  <div class="select__control"><div id="tags"><div class="select__multi-value"><div class="select__multi-value__label">Python</div></div></div><input id="skills" role="combobox" aria-expanded="false" aria-autocomplete="list"></div>
+  <div id="menu" hidden></div></div>
+<script>
+  const input=document.getElementById('skills'),menu=document.getElementById('menu'),tags=document.getElementById('tags');
+  input.onclick=()=>{menu.hidden=false;menu.innerHTML='';for(const name of ['Python','SQL','Go']){const o=document.createElement('div');o.setAttribute('role','option');o.textContent=name;o.onclick=()=>{if(![...tags.querySelectorAll('.select__multi-value__label')].some(t=>t.textContent===name)){const w=document.createElement('div');w.className='select__multi-value';w.innerHTML='<div class="select__multi-value__label"></div>';w.firstChild.textContent=name;tags.appendChild(w);}menu.hidden=true;};menu.appendChild(o);}};
+  input.onkeydown=e=>{if(e.key==='Escape')menu.hidden=true};
+</script>
+</body></html>
+<!-- Greenhouse job-boards renders a hidden required shim next to each React-Select; it must never become a question. -->
+<input id="shim" required tabindex="-1" aria-hidden="true" class="remix-css-requiredInput" style="opacity:0;width:200px;height:21px" value="">

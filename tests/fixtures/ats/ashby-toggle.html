@@ -1,0 +1,8 @@
+<!doctype html><html><body>
+<div class="_fieldEntry"><label class="_heading" for="name">Full name <span>*</span></label><input id="name" name="_systemfield_name"></div>
+<div class="_fieldEntry"><label class="_heading">Are you open to relocation? *</label>
+  <div class="_yesno"><button type="button" aria-pressed="false" id="yes">Yes</button><button type="button" aria-pressed="false" id="no">No</button></div></div>
+<script>
+  for(const b of document.querySelectorAll('._yesno button'))b.onclick=()=>{for(const o of document.querySelectorAll('._yesno button'))o.setAttribute('aria-pressed',String(o===b));};
+</script>
+</body></html>

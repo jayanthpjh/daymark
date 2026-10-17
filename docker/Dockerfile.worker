@@ -1,0 +1,19 @@
+FROM mcr.microsoft.com/playwright:v1.63.0-noble
+
+USER root
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends xvfb x11vnc novnc websockify curl \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+COPY --chown=pwuser:pwuser . ./
+
+ENV NODE_ENV=production \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    DAYMARK_ROLE=worker \
+    DAYMARK_WORKER_PORT=4174
+
+USER pwuser
+ENTRYPOINT ["bash", "docker/worker-entrypoint.sh"]

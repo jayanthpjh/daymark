@@ -1,0 +1,23 @@
+#cloud-config
+# Paste into the OCI instance "cloud-init script" box. Ubuntu 24.04 arm64 (VM.Standard.A1.Flex, 4 OCPU / 24 GB).
+# Replace TS_AUTHKEY with a one-time, non-reusable Tailscale auth key (tag it tag:daymark).
+package_update: true
+package_upgrade: true
+packages: [ca-certificates, curl, gnupg, ufw, unattended-upgrades, age, postgresql-client]
+write_files:
+  - path: /etc/apt/apt.conf.d/20auto-upgrades
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+runcmd:
+  - install -m 0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  - echo "deb [arch=arm64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu noble stable" > /etc/apt/sources.list.d/docker.list
+  - apt-get update && apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+  - curl -fsSL https://tailscale.com/install.sh | sh
+  - tailscale up --auth-key=TS_AUTHKEY --ssh --hostname=daymark
+  # Default-deny: nothing is reachable from the public internet. Tailscale carries all traffic.
+  - ufw default deny incoming && ufw default allow outgoing && ufw allow in on tailscale0 && ufw --force enable
+  - mkdir -p /srv/daymark && chown ubuntu:ubuntu /srv/daymark
+  - usermod -aG docker ubuntu
+  # Mount the 150 GB block volume at /srv/daymark after attaching it (see docs/oci-deploy.md step 3).

@@ -1,0 +1,34 @@
+// Isolated check of the tailoring routes with a mocked model and a paused worker. Synthetic data only; nothing leaves this machine.
+import net from 'node:net';
+import {spawn} from 'node:child_process';import fs from 'node:fs/promises';import os from 'node:os';import path from 'node:path';import assert from 'node:assert/strict';
+const prepId='aaaa1111-1111-1111-1111-111111111111',fillId='bbbb2222-2222-2222-2222-222222222222',prep2='cccc3333-3333-3333-3333-333333333333',fill2='dddd4444-4444-4444-4444-444444444444';
+const source='Alex Doe\napply@example.test | 555-0100\n\nSUMMARY\nData engineer building batch pipelines on Snowflake and Airflow.\n\nSKILLS\nPython, SQL, Snowflake, Airflow\n\nEXPERIENCE\nSenior Data Engineer, Northwind Analytics\nMar 2021 - Present\n- Rebuilt 120 dbt models on Snowflake, reducing compute cost.\n- Ran Airflow pipelines feeding the finance warehouse.\n\nEDUCATION\nB.S. Computer Science, University of Texas at Austin, 2018';
+const workHistory='Senior Data Engineer, Northwind Analytics\nMar 2021 - Present\n- Rebuilt 120 dbt models on Snowflake, reducing compute cost.\n- Ran Airflow pipelines feeding the finance warehouse.';
+const education='B.S. Computer Science, University of Texas at Austin, 2018';
+const plan={summary:'Data engineer building Snowflake and Airflow pipelines.',skills:['Python, SQL, Snowflake, Airflow','Kafka, Terraform'],experience:[{header:'Senior Data Engineer, Northwind Analytics',bullets:[{text:'Rebuilt 120 dbt models on Snowflake, reducing compute cost.'},{text:'Built Kafka streaming ingestion with Terraform, cutting latency from 6 hours to 5 minutes.'}]}],coverLetter:'Your platform fits my work. I would like to talk.'};
+const dir=await fs.mkdtemp(path.join(os.tmpdir(),'daymark-tailoring-'));await fs.mkdir(path.join(dir,'files'));await fs.writeFile(path.join(dir,'env'),'NVIDIA_API_KEY=synthetic\n');
+await fs.writeFile(path.join(dir,'preload.mjs'),`const o=globalThis.setInterval;globalThis.setInterval=(c,d,...a)=>o(d===500?()=>{}:c,d,...a);const f=globalThis.fetch;globalThis.fetch=async(u,x)=>String(u).includes('integrate.api.nvidia.com')?new Response(JSON.stringify({choices:[{finish_reason:'stop',message:{content:JSON.stringify(${JSON.stringify(plan)})}}]}),{status:200,headers:{'content-type':'application/json'}}):f(u,x);`);
+const sourceProfile={name:'Alex Doe',email:'apply@example.test',phone:'555-0100',workHistory,education};
+await fs.writeFile(path.join(dir,'state.json'),JSON.stringify({automaticSubmissionVersion:2,preferences:{reviewBeforeSubmit:true},profile:{...sourceProfile,headline:'Data engineer building batch pipelines on Snowflake and Airflow.',skills:'Python, SQL, Snowflake, Airflow',resumeText:source,masterResumeText:source,roleSearch:'Data Engineer'},onboarding:{profileConfirmed:true,completed:true},
+ jobs:[{id:'j',company:'Acme',role:'Data Engineer',url:'https://boards.greenhouse.io/acme/jobs/1',description:'Requirements: Snowflake, dbt, Kafka streaming, Terraform, Airflow. Python and SQL. 5+ years.'},{id:'j2',company:'Globex',role:'Data Engineer',url:'https://boards.greenhouse.io/globex/jobs/1',description:'Requirements: Snowflake, dbt, Kafka streaming, Terraform, Airflow. Python and SQL. 5+ years.'}],
+ tasks:[{id:prepId,type:'prepare',jobId:'j',company:'Acme',role:'Data Engineer',status:'ready_for_review',reviewPolicy:'final',autoFill:true,artifacts:{resume:source,coverLetter:'',changes:[],approved:false,versions:[],reviewHistory:[],resumeVersion:0,resumePdf:path.join(dir,'files','d.pdf'),resumeDocx:path.join(dir,'files','d.docx'),sourceProfile,tailoringMode:'honest'}},
+  {id:fillId,type:'fill',jobId:'j',parentTaskId:prepId,company:'Acme',role:'Data Engineer',status:'needs_you',stage:'Awaiting your review',finalReviewReady:true,reviewPolicy:'final',progress:95},
+  {id:prep2,type:'prepare',jobId:'j2',company:'Globex',role:'Data Engineer',status:'ready_for_review',reviewPolicy:'final',autoFill:true,artifacts:{resume:source,coverLetter:'',changes:[],approved:false,versions:[],reviewHistory:[],resumeVersion:0,resumePdf:path.join(dir,'files','d.pdf'),resumeDocx:path.join(dir,'files','d.docx'),sourceProfile,tailoringMode:'aggressive'}},
+  {id:fill2,type:'fill',jobId:'j2',parentTaskId:prep2,company:'Globex',role:'Data Engineer',status:'needs_you',stage:'Awaiting your review',finalReviewReady:true,reviewPolicy:'final',progress:95}],applications:[]}));
+const s=net.createServer();await new Promise(r=>s.listen(0,'127.0.0.1',r));const port=s.address().port;await new Promise(r=>s.close(r));
+const child=spawn(process.execPath,['--import',path.join(dir,'preload.mjs'),'server.mjs'],{env:{...process.env,PORT:String(port),DAYMARK_DATA_DIR:dir,DAYMARK_ENV_PATH:path.join(dir,'env')},stdio:['ignore','pipe','pipe']});let err='';child.stderr.on('data',c=>err+=c);
+const api=async(route,body)=>{const r=await fetch(`http://127.0.0.1:${port}${route}`,body?{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}:{});return {status:r.status,body:await r.json().catch(()=>({}))};};
+try{
+  for(let i=0;i<100&&(await api('/api/health').catch(()=>({status:0}))).status!==200;i++)await new Promise(r=>setTimeout(r,100));
+  const strong=await api(`/api/tasks/${prepId}/tailor-preview`,{mode:'strong'});assert.equal(strong.status,200,JSON.stringify(strong.body));
+  assert.equal(strong.body.preview.claims.length,0,'strong mode drops invented lines');assert.ok(!strong.body.preview.resume.includes('Kafka'));
+  assert.equal((await api(`/api/tasks/${prepId}/tailor-preview`,{mode:'reckless'})).status,400);
+  // Strong-only: asking for aggressive is accepted but still never invents lines or claims.
+  const aggressive=await api(`/api/tasks/${prepId}/tailor-preview`,{mode:'aggressive'});assert.equal(aggressive.status,200);
+  const p=aggressive.body.preview;assert.equal(p.claims.length,0,'aggressive request is clamped to strong: no claims');assert.ok(!p.resume.includes('Kafka')&&!p.resume.includes('Terraform'));
+  assert.equal((await api('/api/state')).body.tasks.find(t=>t.id===prepId).review.approvalStatus,'needs_review','a preview saves nothing');
+  const tampered=await api(`/api/tasks/${prep2}/review`,{resumeText:p.resume.replace('Mar 2021 - Present','Mar 2019 - Present'),confirmedAccurate:true});assert.equal(tampered.status,400,'a changed date is rejected');
+  const approved=await api(`/api/tasks/${prep2}/review`,{resumeText:p.resume,confirmedAccurate:true});assert.equal(approved.status,200,JSON.stringify(approved.body));
+  const st=(await api('/api/state')).body.tasks.find(t=>t.id===prep2);assert.equal(st.review.approvalStatus,'approved');assert.equal(st.review.claims.length,0);
+  console.log('PASS: tailoring is strong-only; previews save nothing; identity changes are rejected; approval carries no invented claims.');
+}catch(error){console.error(error,err.slice(-600));process.exitCode=1;}finally{child.kill('SIGKILL');await fs.rm(dir,{recursive:true,force:true});}

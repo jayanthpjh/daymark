@@ -1,0 +1,22 @@
+# Secrets and settings: never committed. Use .env.example as the template.
+.env
+.env.*
+!.env.example
+
+# Your data: applications, resumes, mail copies, browser profiles, backups, logos, credentials.
+data/
+
+# Installed and generated. public/ (the built web app) IS committed: the Docker images copy it as is.
+node_modules/
+trial-output/
+outputs/
+work/
+
+# Local tool state
+.claude/
+.codex/
+.impeccable/
+.gstack/
+.DS_Store
+*.log
+*.tmp

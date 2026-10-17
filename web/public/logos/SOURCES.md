@@ -1,0 +1,1 @@
+Company marks sourced as SVGs from https://simpleicons.org/ via https://cdn.simpleicons.org/airbnb, /figma, and /robinhood on 2026-10-16. Simple Icons distributes icons under CC0; company trademarks remain the property of their owners. Used only to identify employers.
