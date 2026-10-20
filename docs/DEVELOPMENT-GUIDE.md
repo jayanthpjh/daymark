@@ -12,17 +12,21 @@ Users: one applicant. No multi-user, no sharing.
 
 ## 2. How to run it
 
+Docker Desktop must be running. For an existing Docker-backed installation, back it up before setup changes local settings:
+
 ```
-Docker Desktop must be running first.
-npm run infra:up        # PostgreSQL (127.0.0.1:55432) and Redis (127.0.0.1:56379)
-npm start               # Daymark + embedded worker at http://127.0.0.1:4173
+npm run docker:backup
+npm run worker:setup
+npm run worker:up
 curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:4173/api/health    # 200
 ```
 
-- Do not run `npm start` together with the Docker worker container (`npm run worker:up`). Two workers will fight over one queue.
-- If `npm start` fails with `ECONNREFUSED 127.0.0.1:55432`, Docker or PostgreSQL is down. This has happened repeatedly: Docker Desktop stops on its own. Turn on Docker Desktop, Settings, General, "Start Docker Desktop when you sign in".
-- State lives in PostgreSQL (table `daymark_state`, `revision` column). `data/state*.json` files are old copies.
-- Safety settings to confirm after every start: auto-apply off (`preferences.autoApply.enabled === false`) and review-before-submit on (`preferences.reviewBeforeSubmit === true`).
+For a new setup, run `npm run worker:setup` once, review the private `.env.worker` it creates, then run `npm run worker:up`. Open the dashboard at `http://127.0.0.1:4173`. Stop the stack with `npm run worker:down`; persistent database and application data remain in place.
+
+- Do not run `npm start` or `npm run start:api` alongside the Docker stack. The Docker worker has concurrency one and owns the application queue.
+- If Docker Desktop stops, start it and run `npm run worker:up`; do not reset the named database volume or switch to a blank JSON store. Docker Desktop should start when you sign in.
+- State lives in PostgreSQL (table `daymark_state`, `revision` column). Existing `data/state.json` is imported once when the database has no Daymark state; `data/state*.json` files are otherwise old copies.
+- Final submission still requires explicit applicant review and approval. Keep NVIDIA live use disabled until the specific account and endpoint permit production use and expected charges fit the total budget.
 
 Frontend: `web/` (React, Vite, TypeScript, Tailwind, Radix). `npm run web:build` writes to `public/`. The older UI is `public-legacy/`, served at `/legacy`.
 
