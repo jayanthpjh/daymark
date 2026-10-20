@@ -44,7 +44,7 @@ export function filterJobs(jobs, filters, tasks=[], applications=[], now=Date.no
       (!filters.pay || (filters.pay==='listed')===Boolean(job.salary && !/not listed|unknown|not provided/i.test(job.salary))) &&
       (!filters.status || (filters.status==='in_flight'?['queued','running'].includes(jobStatus(job,tasks,applications)):jobStatus(job,tasks,applications)===filters.status));
   });
-  return result.sort((a,b)=>filters.sort==='match' ? (b.match||0)-(a.match||0) || jobDate(b)-jobDate(a) : filters.sort==='newest'?jobDate(b)-jobDate(a):jobRecommendation(b,now)-jobRecommendation(a,now)||(b.match||0)-(a.match||0)||jobDate(b)-jobDate(a)||String(a.id).localeCompare(String(b.id))); 
+  return result.sort((a,b)=>filters.sort==='match' ? (b.match||0)-(a.match||0) || jobDate(b)-jobDate(a) : filters.sort==='newest'?jobDate(b)-jobDate(a):jobRecommendation(b,now)-jobRecommendation(a,now)||(b.match||0)-(a.match||0)||jobDate(b)-jobDate(a)||String(a.id).localeCompare(String(b.id)));
 }
 
 export function jobRecommendation(job,now=Date.now()){const date=jobDate(job);const freshness=date?100*Math.exp(-Math.max(0,now-date)/(7*86400000)):0;return .7*Math.max(0,Math.min(100,Number(job.match)||0))+.3*freshness;}

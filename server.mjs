@@ -1279,7 +1279,7 @@ async function performSubmit(taskId,page,adapter,{auto=false}={}){
   const record=state.applications.find(item=>item.jobId===fill.jobId);
   if(record?.manuallyUpdated&&!['in_progress','filled'].includes(record.status))return;
   const keepReview={finalReviewReady:true,stage:'Awaiting your review'};
-  
+
   if(!page||page.isClosed())return hold({...keepReview,message:'The application browser session has closed. Reopen and refill the application, then submit.'});
   try{const identity=fill.employerIdentity||employerIdentity(job0.url,fill.formSnapshot?.url||job0.url);if(!matchesEmployer(identity,page.url()))return hold({...keepReview,message:'The application page changed, so nothing was submitted.'});}catch{return hold({...keepReview,message:'The employer identity could not be verified, so nothing was submitted.'});}
   try{await assertAuthenticatedBeforeApplicationData(page,{authenticated:guestAdapter(adapter)?false:await greenhouseAccountVerified(page,(await readEnv()).APPLICATION_EMAIL || state.profile?.email),guest:guestAdapter(adapter)});}catch{return hold({stage:'Needs authentication',finalReviewReady:false,reviewReason:'authentication',recoveryReason:'authentication',checkpoint:{...fill.checkpoint,pauseReason:'authentication'},message:'This ATS needs a signed-in account before submission. Sign in, then continue.'});}

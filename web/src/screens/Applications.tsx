@@ -46,7 +46,7 @@ export function Applications() {
   const statuses = [...new Set(rows.map(r => r.status))];
   const toggle = (id: string) => setSelected(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const bulk = (a: string) => { shown.filter(r => selected.has(r.id) && r.task).forEach(r => action.mutate({ id: r.task!.id, a })); setSelected(new Set()); };
-  
+
 
   return (
     <>
