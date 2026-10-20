@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { withoutTargetCompany, claimsInResume, analyzeJob, atsKeywordScore, classifyLine, tailorResume, consistencyWarnings, parseResume, identityLinesIntact } from '../tailoring-engine.mjs';
+import { withoutTargetCompany, claimsInResume, analyzeJob, atsKeywordScore, classifyLine, tailorResume, tailoringFallbackReason, consistencyWarnings, parseResume, identityLinesIntact } from '../tailoring-engine.mjs';
 import { masterResume, missingProtectedResumeFacts } from '../public/workflow.js';
 
 const profile = {
@@ -13,6 +13,12 @@ const profile = {
 const source = masterResume(profile);
 const jd = 'Senior Data Engineer. Requirements: Snowflake, dbt, Kafka streaming, Terraform, Airflow. Python and SQL. 5+ years of experience. Nice to have: Databricks.';
 const hdr1 = 'Senior Data Engineer, Northwind Analytics';
+
+test('fallback status separates NVIDIA policy blocks from factual-review failures', () => {
+  assert.match(tailoringFallbackReason(new Error('NVIDIA production use is not approved for real application data')), /not enabled for real application data.*No request was sent/);
+  assert.match(tailoringFallbackReason(new Error('Draft failed factual review')), /Factual review did not pass/);
+  assert.match(tailoringFallbackReason(new Error('NVIDIA request timed out')), /could not create a verified draft/);
+});
 
 const plan = (over = {}) => ({
   summary: 'Data engineer building Snowflake and Airflow pipelines.',

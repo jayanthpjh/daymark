@@ -4,6 +4,9 @@ import { parseBoardUrl, boardKey } from '../schema.mjs';
 export const CDX_PATTERNS = [
   'boards.greenhouse.io/*', 'job-boards.greenhouse.io/*', 'job-boards.eu.greenhouse.io/*', 'jobs.lever.co/*', 'jobs.eu.lever.co/*',
   'jobs.ashbyhq.com/*', '*.myworkdayjobs.com/*', 'jobs.smartrecruiters.com/*', 'apply.workable.com/*', '*.recruitee.com/*',
+  'ats.rippling.com/*', '*.pinpointhq.com/*', '*.bamboohr.com/careers*', 'jobs.jobvite.com/*', '*.breezy.hr/*',
+  'jobs.gem.com/*', 'app.dover.com/*', '*.teamtailor.com/*', '*.applytojob.com/*', '*.jobs.personio.com/*',
+  '*.eightfold.ai/*', '*.icims.com/*', '*.avature.net/*', '*.jobs2web.com/*',
 ];
 const INDEX_LIST = 'https://index.commoncrawl.org/collinfo.json';
 

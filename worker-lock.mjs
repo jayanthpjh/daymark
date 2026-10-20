@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-export async function acquireWorkerLock(directory, { pid = process.pid, timeoutMs = 15_000, staleMs = 30_000, heartbeatMs = Math.max(1000, Math.floor(staleMs / 3)) } = {}) {
+export async function acquireWorkerLock(directory, { pid = process.pid, timeoutMs = 15_000, staleMs = 30_000, heartbeatMs = Math.max(1000, Math.floor(staleMs / 3)), onLost } = {}) {
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   const file = path.join(directory, 'worker.lock');
   const reaper = `${file}.reaper`;
@@ -22,27 +22,45 @@ export async function acquireWorkerLock(directory, { pid = process.pid, timeoutM
       }
 
       let refreshing = false;
+      let lostError = null;
+      let lossReported = false;
+      const loseLease = error => {
+        lostError ||= new Error('Daymark worker lease was lost; this process must stop starting work.', { cause: error });
+        if (lossReported) return;
+        lossReported = true;
+        try { onLost?.(lostError); } catch {}
+      };
       const heartbeat = setInterval(async () => {
         if (refreshing) return;
         refreshing = true;
         try {
           const current = JSON.parse(await fs.readFile(file, 'utf8'));
-          if (current.token === token) {
-            const now = new Date();
-            await fs.utimes(file, now, now);
-          }
-        } catch {}
+          if (current.token !== token) throw new Error('lock ownership changed');
+          const now = new Date();
+          await fs.utimes(file, now, now);
+        } catch (error) { loseLease(error); }
         finally { refreshing = false; }
       }, heartbeatMs);
       heartbeat.unref?.();
 
-      return async () => {
+      const release = async () => {
         clearInterval(heartbeat);
         try {
           const current = JSON.parse(await fs.readFile(file, 'utf8'));
           if (current.token === token) await fs.unlink(file);
         } catch {}
       };
+      release.assertOwned = async () => {
+        if (lostError) throw lostError;
+        try {
+          const [current, stat] = await Promise.all([fs.readFile(file, 'utf8').then(JSON.parse), fs.stat(file)]);
+          if (current.token !== token || Date.now() - stat.mtimeMs > staleMs) throw new Error('lock ownership changed or expired');
+        } catch (error) {
+          loseLease(error);
+          throw lostError;
+        }
+      };
+      return release;
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
     }

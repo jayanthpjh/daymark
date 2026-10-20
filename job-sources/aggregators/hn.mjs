@@ -18,7 +18,7 @@ export async function fetchPostings({ http, maxComments = 400 }) {
     const title = rest.find(s => /engineer|developer|scientist|analyst|manager|designer|architect|product|data|ml|devops|sre/i.test(s)) || rest[1] || rest[0];
     if (!title || !company || company.length > 80) continue;
     out.push({
-      source: id, sourceId: c.id, title, company, locations: rest.filter(s => /remote|onsite|hybrid|,|[A-Z]{2}\b/.test(s) && s !== title).slice(0, 2),
+      source: id, sourceId: c.id, sourceUrl: `https://news.ycombinator.com/item?id=${c.id}`, title, company, locations: rest.filter(s => /remote|onsite|hybrid|,|[A-Z]{2}\b/.test(s) && s !== title).slice(0, 2),
       remote: /\bremote\b/i.test(head) || undefined, description: text, applyUrl: links[0] || `https://news.ycombinator.com/item?id=${c.id}`, links, postedAt: toIso(c.created_at),
     });
   }

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { ociEnvFile, parseEnvText } from '../oci-env.mjs';
 
 test('generates secrets once and keeps them on re-run', () => {
@@ -9,6 +10,10 @@ test('generates secrets once and keeps them on re-run', () => {
   assert.equal(parseEnvText(first).DAYMARK_POSTGRES_PASSWORD, 'secret1');
   assert.equal(parseEnvText(again).DAYMARK_POSTGRES_PASSWORD, 'secret1');
   assert.equal(parseEnvText(again).SEARXNG_SECRET, 'secret2');
+  assert.equal(parseEnvText(again).DAYMARK_MCP_TOKEN, 'secret3');
+  assert.equal(parseEnvText(first).DAYMARK_MCP_TOKEN, parseEnvText(again).DAYMARK_MCP_TOKEN);
+  assert.equal(parseEnvText(first).LLM_HOSTED_ENABLED, 'false');
+  assert.doesNotMatch(first, /LLM_MODEL/);
 });
 test('copies only the keys the OCI stack needs from the Mac env, never Bridge or ATS secrets', () => {
   const source = 'NVIDIA_API_KEY=nv\nAPPLICATION_EMAIL=a@pm.me\nPROTON_BRIDGE_PASSWORD=nope\nATS_PASSWORD=nope\n';
@@ -28,4 +33,11 @@ test('a mail domain is optional while private mail is on hold, and validated whe
   assert.throws(() => ociEnvFile({ tailscaleIp: '100.64.0.7', mailDomain: 'localhost' }), /MAIL_DOMAIN/);
   const withDomain = ociEnvFile({ tailscaleIp: '100.64.0.7', mailDomain: 'Apply.Example.com', random: () => 'x' });
   assert.equal(parseEnvText(withDomain).MAIL_DOMAIN, 'apply.example.com');
+});
+
+test('OCI cloud-init never embeds a Tailscale auth key in instance metadata', () => {
+  const cloudInit = fs.readFileSync(new URL('../scripts/oci/cloud-init.yaml', import.meta.url), 'utf8');
+  assert.doesNotMatch(cloudInit, /TS_AUTHKEY|--auth-key/i);
+  assert.match(cloudInit, /ufw default deny incoming/);
+  assert.match(cloudInit, /tailscale\.com\/install\.sh/);
 });

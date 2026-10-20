@@ -3,7 +3,7 @@
 // `fetch` is injected so tests never touch the network.
 const sleepDefault = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-export function createHttp({ fetch = globalThis.fetch, delayMs = 400, perHostConcurrency = 2, retries = 2, timeoutMs = 25_000, userAgent = 'DaymarkJobSources/1.0 (personal job search; contact via repo owner)', sleep = sleepDefault, now = Date.now,
+export function createHttp({ fetch = globalThis.fetch, delayMs = 400, perHostConcurrency = 2, retries = 2, timeoutMs = 25_000, userAgent = 'DaymarkJobSources/1.0 (personal job search; contact via repo owner)', sleep = sleepDefault, now = Date.now, htmlCrawlTermsApprovedHosts = process.env.DAYMARK_HTML_CRAWL_TERMS_APPROVED_HOSTS || '',
   // Hosts known to throttle sooner get a slower pace from the start (live trial: Workable answered 429 to 59% of requests at 400 ms).
   hostDelayMs = { 'apply.workable.com': 1000 }, maxDelayMs = 10_000 } = {}) {
   const hosts = new Map();
@@ -71,17 +71,25 @@ export function createHttp({ fetch = globalThis.fetch, delayMs = 400, perHostCon
     const u = new URL(url);
     let rules = robotsCache.get(u.origin);
     if (!rules) {
-      rules = [];
+      rules = null;
       try {
         const response = await request(`${u.origin}/robots.txt`, { headers: { accept: 'text/plain' } });
         if (response.ok) rules = parseRobots(await response.text(), userAgent);
-      } catch { /* unreachable robots.txt: treat as allowed */ }
+      } catch { /* unreachable robots.txt: fail closed for HTML crawling */ }
       robotsCache.set(u.origin, rules);
     }
-    return !rules.some(rule => u.pathname.startsWith(rule));
+    return rules !== null && !rules.some(rule => u.pathname.startsWith(rule));
   }
 
-  return { request, json, text, robotsAllows };
+  async function htmlAllowed(url) {
+    let host;
+    try { host = new URL(url).hostname.toLowerCase(); } catch { return false; }
+    const approved = String(htmlCrawlTermsApprovedHosts).split(',').map(value => value.trim().toLowerCase()).filter(Boolean);
+    if (!approved.includes(host)) return false;
+    return robotsAllows(url);
+  }
+
+  return { request, json, text, robotsAllows, htmlAllowed };
 }
 
 // Returns the Disallow prefixes that apply to us (specific agent group wins over `*`).

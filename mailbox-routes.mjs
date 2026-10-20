@@ -1,5 +1,5 @@
 import { MailboxError } from './mailbox-service.mjs';
-export function mailboxRoutes({service,readBody,send}) {
+export function mailboxRoutes({service,readBody,send,transportEnabled=true}) {
   const json = async (req,limit) => {const value=await readBody(req,limit);if(!value||typeof value!=='object'||Array.isArray(value))throw new MailboxError('invalid_request','Enter a JSON object.',400);return value;};
   return async (req,res,url)=>{
     if(!url.pathname.startsWith('/api/mailbox'))return false;
@@ -9,9 +9,14 @@ export function mailboxRoutes({service,readBody,send}) {
       if(req.method!=='GET'&&req.headers.origin&&req.headers.origin!==`http://${req.headers.host}`&&req.headers.origin!==`https://${req.headers.host}`)throw new MailboxError('origin_rejected','Use Daymark to perform mailbox actions.',403);
       let result;const parts=url.pathname.split('/').filter(Boolean);const [, ,kind,id,action]=parts;
       if(req.method==='GET'&&parts.length===2)result=await service.list(Object.fromEntries(url.searchParams));
+      else if(!transportEnabled&&req.method==='POST'&&(kind==='sync'||(kind==='attempts'&&['send','reconcile','resolve-not-sent'].includes(action))))throw new MailboxError('integration_paused','Proton Bridge mail access is paused until its local connection is verified.',503);
       else if(req.method==='POST'&&kind==='sync')result=await service.sync(await json(req,2000));
       else if(req.method==='GET'&&kind==='threads'&&id)result=await service.thread(id);
       else if(req.method==='POST'&&kind==='messages'&&id)result=await service.updateMessage(id,await json(req,3000));
+      else if(req.method==='POST'&&kind==='labels'&&!id)result=await service.createLabel((await json(req,2000)).name);
+      else if(req.method==='POST'&&kind==='labels'&&action==='delete')result=await service.deleteLabel(decodeURIComponent(id));
+      else if(req.method==='POST'&&kind==='filters'&&!id)result=await service.createFilter(await json(req,3000));
+      else if(req.method==='POST'&&kind==='filters'&&action==='delete')result=await service.deleteFilter(id);
       else if(req.method==='GET'&&kind==='drafts'&&id)result=await service.draft(id);
       else if(req.method==='POST'&&kind==='drafts'&&!action)result=await service.saveDraft(id||null,await json(req,15000000));
       else if(req.method==='POST'&&kind==='drafts'&&action==='review')result=await service.review(id,(await json(req,2000)).revision);

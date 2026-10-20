@@ -1,6 +1,7 @@
 // Find → prep → apply: auto-apply picks the best matches within the cap, skips a clearance role with its reason,
 // prepares the default resume without any NVIDIA call, and Submit all submits the reviewed applications once each.
 import net from 'node:net';
+import http from 'node:http';
 import {spawn} from 'node:child_process';import fs from 'node:fs/promises';import os from 'node:os';import path from 'node:path';import assert from 'node:assert/strict';
 const dir=await fs.mkdtemp(path.join(os.tmpdir(),'daymark-workflow-'));await fs.writeFile(path.join(dir,'env'),'APPLICATION_EMAIL=apply@example.test\n');
 const recent=new Date(Date.now()-3600_000).toISOString();
@@ -29,6 +30,10 @@ try{
   assert.ok(prepared.every(t=>t.source==='auto'&&t.resumeMode==='default'&&t.coverLetter==='off'));
   const skipped=ready.applications.filter(a=>a.status==='skipped');assert.deepEqual(skipped.map(a=>a.jobId),['clr']);assert.match(skipped[0].skipReason,/clearance/);
   assert.equal(ready.dailyAutoApply.count,2);assert.equal((await readLog()).nvidia,0,'default resume makes no NVIDIA call');
+  const crossSite=await fetch(`http://127.0.0.1:${port}/api/tasks/submit-all`,{method:'POST',headers:{host:`127.0.0.1:${port}`,origin:'https://attacker.example','content-type':'application/json'},body:JSON.stringify({confirmed:true})});
+  assert.equal(crossSite.status,403,'cross-site requests cannot trigger reviewed submissions');
+  const rebinding=await new Promise((resolve,reject)=>{const request=http.request({hostname:'127.0.0.1',port,path:'/api/tasks/submit-all',method:'POST',headers:{Host:`attacker.example:${port}`,'content-type':'application/json'}},response=>{response.resume();response.on('end',()=>resolve(response));});request.on('error',reject);request.end(JSON.stringify({confirmed:true}));});
+  assert.equal(rebinding.statusCode,403,'DNS rebinding cannot reach local mutation routes');
   const held=await api('/api/tasks/submit-all',{});assert.equal(held.body.eligible.length,0,'unreviewed resumes cannot be batch submitted');
   assert.equal((await readLog()).clicks,0,'preparation never submits');
   for(const task of prepared){const reviewed=await api(`/api/tasks/${task.id}/review`,{confirmedAccurate:true,resumeText:master});assert.equal(reviewed.status,200);}

@@ -5,5 +5,20 @@ import * as smartrecruiters from './smartrecruiters.mjs';
 import * as workable from './workable.mjs';
 import * as workday from './workday.mjs';
 import * as recruitee from './recruitee.mjs';
-export const ATS_SOURCES = Object.freeze({ greenhouse, lever, ashby, smartrecruiters, workable, workday, recruitee });
+import * as rippling from './rippling.mjs';
+import * as pinpoint from './pinpoint.mjs';
+import * as bamboohr from './bamboohr.mjs';
+import * as jobvite from './jobvite.mjs';
+import * as breezy from './breezy.mjs';
+import {
+  gem, dover, teamtailor, jazzhr, personio, comeet, eightfold,
+  icims, avature, successfactors, ukg, adp, taleo, dayforce, paylocity, paycom,
+} from './universal.mjs';
+
+export const ATS_SOURCES = Object.freeze({
+  greenhouse, lever, ashby, smartrecruiters, workable, workday, recruitee,
+  rippling, pinpoint, bamboohr, jobvite, breezy,
+  gem, dover, teamtailor, jazzhr, personio, comeet, eightfold,
+  icims, avature, successfactors, ukg, adp, taleo, dayforce, paylocity, paycom,
+});
 export const sourceFor = ats => ATS_SOURCES[ats] ?? null;

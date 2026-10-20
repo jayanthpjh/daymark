@@ -30,12 +30,18 @@ function fixture(screen) {
   };
 }
 
+test('recognizes an expired employer session as an authentication checkpoint', async () => {
+  const page = fixture('expired');
+  page.evaluate = async () => 'Your session has expired. Sign in to continue.';
+  assert.equal(await authPreflightScreen(page), 'authentication');
+});
+
 test('detects unresolved authentication and hard challenges before filling', async () => {
   for (const screen of ['login', 'register', 'reset', 'code', 'captcha', 'guest']) assert.notEqual(await authPreflightScreen(fixture(screen)), 'authenticated');
   assert.equal(await authPreflightScreen(fixture('authenticated'),{authenticated:true}), 'authenticated');
 });
 test('refuses profile transmission until authenticated proof is visible', async () => {
-  await assert.rejects(assertAuthenticatedBeforeApplicationData(fixture('login')), /authentication is required/i);
+  await assert.rejects(assertAuthenticatedBeforeApplicationData(fixture('login')), /session is signed out or expired/i);
   await assert.rejects(assertAuthenticatedBeforeApplicationData(fixture('guest')), /applicant account/i);
   await assertAuthenticatedBeforeApplicationData(fixture('authenticated'),{authenticated:true});
 });

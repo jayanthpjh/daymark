@@ -27,6 +27,7 @@ export function ociEnvFile({ tailscaleIp, mailDomain = '', uid = 1000, gid = 100
     `DAYMARK_GID=${Number(gid)}`,
     `DAYMARK_POSTGRES_PASSWORD=${old.DAYMARK_POSTGRES_PASSWORD || random()}`,
     `SEARXNG_SECRET=${old.SEARXNG_SECRET || random()}`,
+    `DAYMARK_MCP_TOKEN=${old.DAYMARK_MCP_TOKEN || random()}`,
     ...(domain ? [`MAIL_DOMAIN=${domain}`, `MAIL_ALIAS_SECRET=${old.MAIL_ALIAS_SECRET || random()}`] : []),
     `NVIDIA_API_KEY=${pick('NVIDIA_API_KEY')}`,
     `APIFY_API_TOKEN=${pick('APIFY_API_TOKEN')}`,
@@ -35,7 +36,10 @@ export function ociEnvFile({ tailscaleIp, mailDomain = '', uid = 1000, gid = 100
     `APPLICATION_FORWARD_ENABLED=${pick('APPLICATION_FORWARD_ENABLED') || 'false'}`,
     `APPLICATION_FORWARD_TO=${pick('APPLICATION_FORWARD_TO')}`,
     `APPLICATION_FORWARD_MODE=${pick('APPLICATION_FORWARD_MODE') || 'summary'}`,
-    `LLM_MODEL=${pick('LLM_MODEL') || 'qwen3:8b'}`,
+    `NVIDIA_MODEL=${pick('NVIDIA_MODEL') || 'nvidia/nemotron-3-super-120b-a12b'}`,
+    `NVIDIA_RPM=${pick('NVIDIA_RPM') || '10'}`,
+    `LLM_HOSTED_ENABLED=${pick('LLM_HOSTED_ENABLED') || 'false'}`,
+    `MAC_BRIDGE_TAILSCALE_HOST=${pick('MAC_BRIDGE_TAILSCALE_HOST')}`,
   ];
   return `${lines.join('\n')}\n`;
 }

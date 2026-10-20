@@ -20,17 +20,66 @@ async function runSignInATS(page, { host, credentials, account = {}, saveAccount
   let screen = await authPreflightScreen(page, { guest });
   if (screen === 'authenticated') return true;
   if (['captcha', 'password_reset'].includes(screen)) throw pause('Complete the employer security challenge or password recovery in the browser.');
+  const registerAccount = async () => {
+    if (!profile?.registration) return false;
+    if (!credentials?.username || !credentials?.password) throw pause('Add your application email and an ATS password in Settings before creating this account.');
+    if (account.status === 'active' || account.status === 'existing') return false;
+    if (account.registrationAttemptAt) throw pause('Account creation was already started. Complete any employer prompt in the browser before continuing; Daymark will not submit registration twice.');
+    let registration = await visible(page.getByRole('heading', { name: /^(create account|register|sign up)$/i }));
+    if (!registration) {
+      const create = page.getByRole('link', { name: /^(create account|create an account|register|sign up)$/i })
+        .or(page.getByRole('button', { name: /^(create account|create an account|register|sign up)$/i }));
+      if (await create.count() === 1 && await create.isVisible().catch(() => false)) {
+        await check();
+        await create.click({ timeout: 10_000 }).catch(() => { throw pause('The employer registration page did not open. Complete account creation in the browser.'); });
+        await wait(500); await check();
+        registration = await visible(page.getByRole('heading', { name: /^(create account|register|sign up)$/i }));
+      }
+    }
+    if (!registration) return false;
+    const passwords = page.locator('input[type="password"]:visible');
+    const form = passwords.first().locator('xpath=ancestor::form[1]');
+    if (await passwords.count() !== 2 || await form.count() !== 1 || await form.locator('input[type="password"]:visible').count() !== 2 || await form.locator('input[type="checkbox"]:visible').count()) {
+      throw pause('The employer registration form needs your review. Complete its fields or consent in the browser, then continue.');
+    }
+    const formEmail = form.locator('input[type="email"]:visible,input[autocomplete="email"]:visible,input[name*="email" i]:visible');
+    if (await formEmail.count() !== 1) throw pause('The employer registration email field is unclear. Complete registration in the browser.');
+    const firstName = String(profile.firstName || '').trim();
+    const lastName = String(profile.lastName || '').trim();
+    for (const [selector, value] of [['input[autocomplete="given-name"]:visible,input[name*="first" i]:visible', firstName], ['input[autocomplete="family-name"]:visible,input[name*="last" i]:visible', lastName]]) {
+      const field = form.locator(selector);
+      const count = await field.count();
+      if (count > 1) throw pause('The employer registration name fields are ambiguous. Complete registration in the browser.');
+      if (count === 1 && value) await field.fill(value);
+    }
+    const submit = form.getByRole('button', { name: /^(create account|register|sign up|submit)$/i });
+    if (await submit.count() !== 1 || await submit.isDisabled()) throw pause('The employer registration action is unclear. Complete registration in the browser.');
+    await formEmail.fill(credentials.username);
+    await passwords.nth(0).fill(credentials.password);
+    await passwords.nth(1).fill(credentials.password);
+    const incomplete = await form.locator('input[required]:visible,select[required]:visible,textarea[required]:visible,[aria-required="true"]:visible').evaluateAll(nodes => nodes.some(node => !String(node.value || '').trim() && node.type !== 'checkbox'));
+    if (incomplete) throw pause('The employer registration form has required details Daymark cannot safely infer. Complete it in the browser.');
+    await check();
+    account = { ...account, status: 'pending', registrationAttemptAt: new Date().toISOString() };
+    await saveAccount(account);
+    await check();
+    await submit.click({ timeout: 10_000 }).catch(() => { throw pause('Registration had an uncertain response. Inspect the employer page before continuing.'); });
+    await wait(500); await check();
+    return true;
+  };
+  let registrationStarted = await registerAccount();
   let password = page.locator('input[type="password"]:visible');
   const submitName = profile?.submit || /^(sign in|log in|login)$/i;
   const userSelector = ['input[autocomplete="username"]:visible', 'input[type="email"]:visible', 'input[name*="email" i]:visible', 'input[name*="user" i]:visible', profile?.username].filter(Boolean).join(',');
   let identifierDone = false;
   // Some ATSs hide sign-in behind a link on the posting. Open it once, and only when it is the single match on this host.
-  if (profile?.entry && ['authentication', 'unknown'].includes(screen) && !await password.count() && !await visible(page.locator(userSelector).first())) {
+  if (!registrationStarted && profile?.entry && ['authentication', 'unknown'].includes(screen) && !await password.count() && !await visible(page.locator(userSelector).first())) {
     const entry = page.getByRole('link', { name: profile.entry }).or(page.getByRole('button', { name: profile.entry }));
     if (await entry.count() === 1) { await check(); await entry.click({ timeout: 10_000 }).catch(() => {}); await wait(800); await check(); password = page.locator('input[type="password"]:visible'); screen = await authPreflightScreen(page, { guest }); }
   }
+  if (!registrationStarted) registrationStarted = await registerAccount();
   // Identifier-first sign-in: the email is asked on its own screen, then the password. No credential is submitted at this step.
-  if (profile?.identifierFirst && ['authentication', 'unknown'].includes(screen) && !await password.count()) {
+  if (!registrationStarted && profile?.identifierFirst && ['authentication', 'unknown'].includes(screen) && !await password.count()) {
     if (!credentials?.username || !credentials?.password) throw pause('Add a matching ATS login in Settings, then continue.');
     const field = page.locator(userSelector);
     const next = page.getByRole('button', { name: profile.next || /^(next|continue)$/i });
@@ -42,7 +91,7 @@ async function runSignInATS(page, { host, credentials, account = {}, saveAccount
     for (let poll = 0; poll < 20 && !await password.count(); poll++) { await wait(500); await check(); }
     if (!await password.count()) throw pause('The employer did not ask for a password. Complete sign-in in the browser.');
   }
-  if (await password.count()) {
+  if (!registrationStarted && await password.count()) {
     if (!credentials?.username || !credentials?.password) throw pause('Add a matching ATS login in Settings, then continue.');
     if (await password.count() !== 1 || await visible(page.locator('input[autocomplete="new-password"]:visible'))) throw pause('Account creation or password recovery requires your review.');
     if (account.loginAttemptAt) throw pause('This saved login was already attempted. Check the employer response or update the saved login before continuing.');

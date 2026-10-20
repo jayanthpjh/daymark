@@ -6,9 +6,9 @@ const MIN=60_000,NOW=Date.parse('2026-10-20T12:00:00Z');
 const state=(extra={})=>({profile:{roleSearch:'data engineer'},tasks:[],preferences:{},...extra});
 const iso=minAgo=>new Date(NOW-minAgo*MIN).toISOString();
 
-test('job pulling preferences default to hourly and 7 days, and are clamped',()=>{
-  assert.deepEqual(defaultJobPulling,{scheduleMinutes:60,maxAgeDays:7});
-  assert.deepEqual(normalizePreferences({}).jobPulling,{scheduleMinutes:60,maxAgeDays:7});
+test('job pulling preferences default to hourly and 60 days, and are clamped',()=>{
+  assert.deepEqual(defaultJobPulling,{scheduleMinutes:60,maxAgeDays:60});
+  assert.deepEqual(normalizePreferences({}).jobPulling,{scheduleMinutes:60,maxAgeDays:60});
   assert.equal(normalizePreferences({jobPulling:{scheduleMinutes:0}}).jobPulling.scheduleMinutes,0,'0 turns it off');
   assert.equal(normalizePreferences({jobPulling:{scheduleMinutes:3}}).jobPulling.scheduleMinutes,15,'never faster than every 15 minutes');
   assert.equal(normalizePreferences({jobPulling:{scheduleMinutes:99999}}).jobPulling.scheduleMinutes,1440);
@@ -24,6 +24,7 @@ test('a collection is due once the interval has passed since the last one',()=>{
 });
 test('it waits for saved roles, an idle queue, and the setting being on',()=>{
   assert.equal(scheduledCollectionDue(state({profile:{roleSearch:'  '}}),{now:NOW,env:{}}),false);
+  assert.equal(scheduledCollectionDue(state({profile:{roleSearch:'',roleFamilies:['software-engineering']}}),{now:NOW,env:{}}),true,'reviewed role families are valid collection targets');
   assert.equal(scheduledCollectionDue(state({tasks:[{type:'collect',status:'running',createdAt:iso(500)}]}),{now:NOW,env:{}}),false);
   assert.equal(scheduledCollectionDue(state({tasks:[{type:'collect',status:'queued',createdAt:iso(500)}]}),{now:NOW,env:{}}),false);
   assert.equal(scheduledCollectionDue(state({preferences:{jobPulling:{scheduleMinutes:0}}}),{now:NOW,env:{}}),false);

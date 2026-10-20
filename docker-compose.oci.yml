@@ -16,7 +16,7 @@ services:
       POSTGRES_USER: daymark
       POSTGRES_PASSWORD: "${DAYMARK_POSTGRES_PASSWORD:?Run node scripts/setup-oci.mjs first}"
     volumes: ["/srv/daymark/postgres:/var/lib/postgresql/data"]
-    mem_limit: 1g
+    mem_limit: 768m
     shm_size: 128m
     healthcheck: { test: ["CMD-SHELL", "pg_isready -U daymark -d daymark"], interval: 5s, timeout: 3s, retries: 12 }
     logging: *logging
@@ -29,29 +29,6 @@ services:
     volumes: ["/srv/daymark/redis:/data"]
     mem_limit: 128m
     healthcheck: { test: ["CMD", "redis-cli", "ping"], interval: 5s, timeout: 3s, retries: 12 }
-    logging: *logging
-
-  # Proton Bridge reads the application Proton account over IMAP/SMTP. Internal network only; nothing here is public.
-  proton-bridge:
-    container_name: daymark-proton-bridge
-    build: { context: ., dockerfile: docker/Dockerfile.bridge }
-    restart: unless-stopped
-    command: ["run"]
-    volumes: ["/srv/daymark/bridge:/home/bridge"]
-    mem_limit: 512m
-    cap_drop: [ALL]
-    security_opt: ["no-new-privileges:true"]
-    logging: *logging
-
-  llm:
-    container_name: daymark-llm
-    image: ollama/ollama:0.12.6
-    restart: unless-stopped
-    entrypoint: ["/bin/sh", "/llm-entrypoint.sh"]
-    environment: { OLLAMA_NUM_PARALLEL: "1", OLLAMA_KEEP_ALIVE: 24h, OLLAMA_CONTEXT_LENGTH: "8192", LLM_MODELS: "${LLM_MODELS:-qwen3:8b qwen3:4b nomic-embed-text}" }
-    volumes: ["/srv/daymark/ollama:/root/.ollama", "./docker/llm-entrypoint.sh:/llm-entrypoint.sh:ro"]
-    mem_limit: 9g
-    healthcheck: { test: ["CMD", "ollama", "list"], interval: 20s, timeout: 10s, retries: 6, start_period: 60s }
     logging: *logging
 
   searxng:
@@ -69,7 +46,7 @@ services:
     container_name: daymark-api
     build: { context: ., dockerfile: docker/Dockerfile.api }
     restart: unless-stopped
-    depends_on: { postgres: { condition: service_healthy }, redis: { condition: service_healthy }, proton-bridge: { condition: service_started } }
+    depends_on: { postgres: { condition: service_healthy }, redis: { condition: service_healthy } }
     env_file: [.env.oci]
     environment:
       DAYMARK_ROLE: api
@@ -77,16 +54,17 @@ services:
       DAYMARK_DATA_DIR: /srv/daymark/data
       DAYMARK_DATABASE_URL: "postgresql://daymark:${DAYMARK_POSTGRES_PASSWORD}@postgres:5432/daymark"
       DAYMARK_REDIS_URL: redis://redis:6379/0
-      PROTON_BRIDGE_HOST: proton-bridge
-      PROTON_BRIDGE_PORT: "2143"
-      PROTON_BRIDGE_SMTP_PORT: "2025"
-      DAYMARK_BRIDGE_HOSTS: proton-bridge
-      LLM_BASE_URL: http://llm:11434
-      LLM_MODEL: "${LLM_MODEL:-qwen3:8b}"
+      PROTON_BRIDGE_HOST: "${MAC_BRIDGE_TAILSCALE_HOST:?Set the Mac Tailscale host after configuring restricted Serve}"
+      PROTON_BRIDGE_PORT: "11143"
+      PROTON_BRIDGE_SMTP_PORT: "11025"
+      DAYMARK_BRIDGE_HOSTS: "${MAC_BRIDGE_TAILSCALE_HOST}"
+      NVIDIA_MODEL: "${NVIDIA_MODEL:-nvidia/nemotron-3-super-120b-a12b}"
+      NVIDIA_RPM: "${NVIDIA_RPM:-10}"
+      LLM_HOSTED_ENABLED: "${LLM_HOSTED_ENABLED:-false}"
       SEARXNG_URL: http://searxng:8080
     volumes: ["/srv/daymark/data:/srv/daymark/data", "/srv/daymark/secrets:/run/secrets:ro"]
     ports: ["${TAILSCALE_IP:?Set TAILSCALE_IP in .env.oci}:4173:4173"]
-    mem_limit: 768m
+    mem_limit: 512m
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     logging: *logging
@@ -107,6 +85,10 @@ services:
       DAYMARK_DATABASE_URL: "postgresql://daymark:${DAYMARK_POSTGRES_PASSWORD}@postgres:5432/daymark"
       DAYMARK_REDIS_URL: redis://redis:6379/0
       DAYMARK_WORKER_PORT: "4174"
+      DAYMARK_BROWSER_CONCURRENCY: "1"
+      NVIDIA_MODEL: "${NVIDIA_MODEL:-nvidia/nemotron-3-super-120b-a12b}"
+      NVIDIA_RPM: "${NVIDIA_RPM:-10}"
+      LLM_HOSTED_ENABLED: "${LLM_HOSTED_ENABLED:-false}"
       DAYMARK_ATS_CREDENTIALS_PATH: /run/secrets/daymark-ats-credentials
       PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
       HOME: /tmp
@@ -114,7 +96,7 @@ services:
     volumes: ["/srv/daymark/data:/srv/daymark/data", "/srv/daymark/secrets:/run/secrets:ro"]
     ports: ["${TAILSCALE_IP}:6080:6080"]
     shm_size: 1gb
-    mem_limit: 4g
+    mem_limit: 3g
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     logging: *logging

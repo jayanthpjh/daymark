@@ -26,7 +26,7 @@ live('identifier-first never submits when the next screen is not a password',asy
 });
 live('identifier-first needs a login: without one it pauses before typing anything',async()=>{
   const page=await pageFor(icims);
-  await assert.rejects(signInATS(page,options({profile:signInProfileFor('icims'),credentials:null})),/Add a matching ATS login/);
+  await assert.rejects(signInATS(page,options({profile:signInProfileFor('icims'),credentials:null})),/Add your application email and an ATS password/);
   assert.equal(await page.evaluate(()=>window.emails||''),'');await page.close();
 });
 
@@ -49,6 +49,23 @@ live('the posting link is not clicked on a verification screen',async()=>{
   const page=await pageFor(`<a href="#" id=a onclick="window.hit=1">Log In</a><form><input autocomplete=one-time-code><button type=button>Verify code</button></form>`);
   await assert.rejects(signInATS(page,options({profile:signInProfileFor('icims'),findCode:async()=>null})));
   assert.equal(await page.evaluate(()=>window.hit||0),0);await page.close();
+});
+const registration=`<body><h1>Create Account</h1><form><label>First name <input name=firstName autocomplete=given-name></label><label>Last name <input name=lastName autocomplete=family-name></label><label>Email <input type=email name=email></label><label>Password <input type=password autocomplete=new-password></label><label>Confirm password <input type=password></label><button type=button id=create>Create Account</button></form><script>create.onclick=()=>{window.created={first:document.querySelector('[name=firstName]').value,last:document.querySelector('[name=lastName]').value,email:document.querySelector('[type=email]').value,passwordFields:[...document.querySelectorAll('[type=password]')].map(x=>x.value)};document.body.innerHTML='<button aria-label=Account>Account</button>'}</script></body>`;
+live('creates a supported ATS account once from a clearly labeled form using saved credentials',async()=>{
+  const page=await pageFor(registration);const saved=[];
+  await signInATS(page,options({profile:{...signInProfileFor('icims'),firstName:'Alex',lastName:'Example'},saveAccount:async value=>saved.push(value)}));
+  assert.deepEqual(await page.evaluate(()=>window.created),{first:'Alex',last:'Example',email:'alex@example.test',passwordFields:['fake-password','fake-password']});
+  assert.ok(saved.some(value=>value.registrationAttemptAt));assert.equal(saved.at(-1).status,'active');await page.close();
+});
+live('registration pauses before terms or consent and never checks them automatically',async()=>{
+  const page=await pageFor(registration.replace('<button type=button id=create>','<label><input type=checkbox name=terms>I agree to the employer terms</label><button type=button id=create>'));
+  await assert.rejects(signInATS(page,options({profile:{...signInProfileFor('icims'),firstName:'Alex',lastName:'Example'}})),/needs your review/i);
+  assert.equal(await page.locator('[type=checkbox]').isChecked().catch(()=>false),false);assert.equal(await page.evaluate(()=>window.created),undefined);await page.close();
+});
+live('an uncertain registration attempt is never submitted a second time',async()=>{
+  const page=await pageFor(registration);
+  await assert.rejects(signInATS(page,options({account:{registrationAttemptAt:new Date().toISOString()},profile:{...signInProfileFor('icims'),firstName:'Alex',lastName:'Example'}})),/already started/i);
+  assert.equal(await page.evaluate(()=>window.created),undefined);await page.close();
 });
 
 test('only the three listed ATSs have sign-in profiles, and they cannot be edited',()=>{

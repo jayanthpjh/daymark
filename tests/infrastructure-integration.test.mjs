@@ -8,8 +8,8 @@ import { Pool } from 'pg';
 import { createPostgresStateStore } from '../postgres-state.mjs';
 import { createRedisTaskQueue } from '../redis-task-queue.mjs';
 
-const databaseUrl = process.env.DAYMARK_TEST_DATABASE_URL || '';
-const redisUrl = process.env.DAYMARK_TEST_REDIS_URL || '';
+const databaseUrl = process.env.DAYMARK_TEST_DATABASE_URL || process.env.DAYMARK_DATABASE_URL || '';
+const redisUrl = process.env.DAYMARK_TEST_REDIS_URL || process.env.DAYMARK_REDIS_URL || '';
 
 test('PostgreSQL checkpoints and Redis single-worker dispatch survive real service calls', { skip: !databaseUrl || !redisUrl }, async () => {
   const dbName = `daymark_test_${randomUUID().replaceAll('-', '')}`;

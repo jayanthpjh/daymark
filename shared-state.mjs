@@ -113,7 +113,7 @@ export function mergeStateSnapshots(base, draft, latest) {
   return mergeValue('', base, draft, latest);
 }
 
-async function acquireFileLock(file, { timeoutMs = 15_000, staleMs = 30_000 } = {}) {
+export async function acquireFileLock(file, { timeoutMs = 15_000, staleMs = 30_000, heartbeatMs = Math.max(1000, Math.floor(staleMs / 3)) } = {}) {
   const started = Date.now();
   const token = `${process.pid}:${randomUUID()}`;
   while (Date.now() - started < timeoutMs) {
@@ -122,22 +122,34 @@ async function acquireFileLock(file, { timeoutMs = 15_000, staleMs = 30_000 } = 
       await handle.writeFile(token);
       await handle.close();
       let refreshing = false;
+      let lostError = null;
+      const loseLease = error => { lostError ||= new Error('Daymark state lock lease was lost; the saved file was left untouched.', { cause: error }); };
       const refresh = setInterval(async () => {
         if (refreshing) return;
         refreshing = true;
         try {
-          if (await fs.readFile(file, 'utf8') === token) {
-            const now = new Date();
-            await fs.utimes(file, now, now);
-          }
-        } catch {}
+          if (await fs.readFile(file, 'utf8') !== token) throw new Error('lock ownership changed');
+          const now = new Date();
+          await fs.utimes(file, now, now);
+        } catch (error) { loseLease(error); }
         finally { refreshing = false; }
-      }, Math.max(1000, Math.floor(staleMs / 3)));
+      }, heartbeatMs);
       refresh.unref?.();
-      return async () => {
+      const release = async () => {
         clearInterval(refresh);
         if (await fs.readFile(file, 'utf8').catch(() => '') === token) await fs.unlink(file).catch(() => {});
       };
+      release.assertOwned = async () => {
+        if (lostError) throw lostError;
+        try {
+          const [current, stat] = await Promise.all([fs.readFile(file, 'utf8'), fs.stat(file)]);
+          if (current !== token || Date.now() - stat.mtimeMs > staleMs) throw new Error('lock ownership changed or expired');
+        } catch (error) {
+          loseLease(error);
+          throw lostError;
+        }
+      };
+      return release;
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
       const stat = await fs.stat(file).catch(() => null);
@@ -202,6 +214,7 @@ export function createSharedJsonStore(file) {
         } finally {
           await handle.close();
         }
+        await release.assertOwned();
         await fs.rename(temporary, file);
         temporary = undefined;
         await fs.chmod(file, 0o600);

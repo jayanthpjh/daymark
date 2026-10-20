@@ -1,6 +1,7 @@
-// Rule filters + embedding match score. `embed(texts) -> Promise<number[][]>` is injected (the local
-// nomic-embed-text model arrives later); without it the score falls back to role-term rules only.
+// Rule filters + profile-vector match score. `embed(texts) -> Promise<number[][]>` is injected
+// when configured; without it the score falls back to explainable role and skill overlap.
 import { countriesIn, mentionsForeignRegion, mentionsBroadRegion } from './geo.mjs';
+import { roleFamiliesForTitle, ROLE_FAMILIES } from './role-families.mjs';
 const words = s => String(s).toLowerCase().split(/[^a-z0-9+#.]+/).filter(Boolean);
 export const splitRoles = value => String(value ?? '').split(/[\n,;]/).map(x => x.trim()).filter(Boolean).slice(0, 24);
 
@@ -9,8 +10,6 @@ export function titleMatchesRole(title, roles) {
   const t = String(title).toLowerCase(), tw = new Set(words(title));
   return roles.some(role => { const r = role.toLowerCase(); return t.includes(r) || words(role).every(w => tw.has(w)); });
 }
-// A search term can name a country ("United States"), a US state ("Texas") or a place ("Austin"). Country and state terms
-// give us the countries the person can work in; a place term does not, so remote roles stay unrestricted for place-only searches.
 function wantedCountries(terms) {
   const wanted = new Set();
   for (const term of terms) for (const id of countriesIn(term.length === 2 && term === term.toUpperCase() ? `x, ${term}` : term)) wanted.add(id);
@@ -21,13 +20,6 @@ const hasTerm = (loc, term) => {
   if (!t) return false;
   return t.length <= 3 ? new RegExp(`(?<![a-z0-9])${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![a-z0-9])`).test(loc) : loc.includes(t);
 };
-/**
- * Does a posting fit where the person wants to work?
- * - A named place or country in the search that appears in the posting's locations is a match, as is a US state or code
- *   when the search is for the United States ("Austin, TX" fits "United States").
- * - "Remote" with no country named fits any search. "Remote, Brazil" or "Remote - EMEA" does not fit a United States search.
- * - Postings with no location are kept: we cannot tell, so the person decides.
- */
 export function locationMatches(posting, locationTerms) {
   if (!locationTerms.length) return true;
   const loc = posting.locations.join(' ; ').toLowerCase();
@@ -39,10 +31,10 @@ export function locationMatches(posting, locationTerms) {
   const named = countriesIn(posting.locations.join(' ; '));
   if ([...wanted].some(id => named.has(id))) return true;
   if (!remote) return false;
-  if (!wanted.size) return true;                       // place-only search: keep legacy behavior for remote roles
+  if (!wanted.size) return true;
   if (mentionsBroadRegion(loc)) return true;
-  if (named.size || mentionsForeignRegion(loc)) return false; // remote, but tied to another country or region
-  return true;                                          // plain "Remote"
+  if (named.size || mentionsForeignRegion(loc)) return false;
+  return true;
 }
 
 export function ruleFilter(posting, rules = {}) {
@@ -61,21 +53,37 @@ export function cosine(a, b) {
 }
 const postingText = p => `${p.title}\n${p.company}\n${p.locations.join(', ')}\n${p.description}`.slice(0, 6000);
 
-function ruleScore(posting, roles) {
+function ruleScore(posting, roles, roleFamilies = [], profileText = '') {
   const hay = `${posting.title} ${posting.description}`.toLowerCase();
-  if (!roles.length) return { score: 50, why: [] };
+  const profileTerms = [...new Set(words(profileText).filter(w => w.length > 2))];
+  const jobTerms = new Set(words(`${posting.title} ${posting.description}`).filter(w => w.length > 2));
+  const skillHits = profileTerms.filter(term => jobTerms.has(term));
+  // Cap effective denominator so detailed resumes with hundreds of unique words are not unfairly penalized.
+  const denom = Math.min(profileTerms.length, Math.max(12, jobTerms.size));
+  const skillFit = profileTerms.length ? Math.min(100, Math.round((skillHits.length / denom) * 100)) : null;
   const inTitle = titleMatchesRole(posting.title, roles);
+  const matchedFamilies = roleFamiliesForTitle(posting.title).filter(id => roleFamilies.includes(id));
+  const familyLabels = ROLE_FAMILIES.filter(f => matchedFamilies.includes(f.id)).map(f => f.label);
   const hits = roles.filter(r => hay.includes(r.toLowerCase())).length;
-  const score = Math.max(30, Math.min(98, Math.round((inTitle ? 70 : 40) + (hits / roles.length) * 28)));
-  return { score, why: [inTitle ? 'Title matches one of your target roles' : hits ? `Description mentions ${hits} of your target roles` : 'No target role found in the title'] };
+  const roleFit = roles.length ? Math.max(0, Math.min(100, Math.round((inTitle ? 72 : 35) + (hits / roles.length) * 28))) : null;
+  const targetFit = roleFamilies.length ? (matchedFamilies.length ? 82 : 35) : roleFit;
+  const effectiveRoleFit = targetFit == null ? roleFit : roleFit == null ? targetFit : Math.max(targetFit, roleFit);
+  const score = skillFit != null && effectiveRoleFit != null ? Math.round(skillFit * 0.4 + effectiveRoleFit * 0.6)
+    : skillFit ?? effectiveRoleFit ?? 50;
+  const why = [];
+  if (inTitle) why.push('Title matches one of your target roles');
+  if (familyLabels.length) why.push(`Role family match: ${familyLabels.join(', ')}`);
+  else if (roles.length) why.push(hits ? `Description mentions ${hits} of your target roles` : 'No target role found in the title');
+  if (skillFit != null) why.push(`${skillHits.length} of ${profileTerms.length} profile terms match`);
+  return { score, why };
 }
 
 /**
  * Score postings against the resume. Returns [{ posting, score, why }] in input order.
  * Embedding similarity (0.25→0.75 cosine mapped to 0→100) carries 60% when `embed` is given.
  */
-export async function scorePostings(postings, { profileText = '', roles = [], embed = null, batchSize = 16 } = {}) {
-  const base = postings.map(p => ruleScore(p, roles));
+export async function scorePostings(postings, { profileText = '', roles = [], roleFamilies = [], embed = null, batchSize = 16 } = {}) {
+  const base = postings.map(p => ruleScore(p, roles, roleFamilies, profileText));
   let sims = null;
   if (embed && profileText.trim() && postings.length) {
     try {

@@ -20,7 +20,7 @@ show();</script></body>`;
 
 async function scenario(name,{aiAnswers,noSubmit=false},run){
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'daymark-dyn-'));await fs.mkdir(path.join(dir,'files'));
-  await fs.writeFile(path.join(dir,'env'),'NVIDIA_API_KEY=test\nAPPLICATION_EMAIL=apply@example.test\n');await fs.writeFile(path.join(dir,'files','draft.pdf'),'%PDF synthetic');
+  await fs.writeFile(path.join(dir,'env'),'NVIDIA_API_KEY=test\nLLM_HOSTED_ENABLED=true\nDAYMARK_NVIDIA_LIVE_APPROVED=true\nAPPLICATION_EMAIL=apply@example.test\n');await fs.writeFile(path.join(dir,'files','draft.pdf'),'%PDF synthetic');
   await fs.writeFile(path.join(dir,'state.json'),JSON.stringify({automaticSubmissionVersion:1,preferences:{reviewBeforeSubmit:true,aiAnswers},
     profile:{name:'Alex Doe',email:'apply@example.test',phone:'555-0100',location:'Austin, TX',addressLine1:'1 Main St',postalCode:'73301'},
     answerPack:{version:2,completed:true,values:{authorization_us:'Yes'}},onboarding:{profileConfirmed:true,completed:true},

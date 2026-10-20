@@ -8,7 +8,7 @@ export function collectionIntervalMinutes(state, env = process.env) {
 
 export function scheduledCollectionDue(state, { now = Date.now(), env = process.env } = {}) {
   const minutes = collectionIntervalMinutes(state, env);
-  if (!minutes || !String(state?.profile?.roleSearch || '').trim()) return false;
+  if (!minutes || (!String(state?.profile?.roleSearch || '').trim() && !state?.profile?.roleFamilies?.length)) return false;
   const tasks = state?.tasks || [];
   if (tasks.some(task => task.type === 'collect' && ['queued', 'running'].includes(task.status))) return false;
   // A failed collection never sets lastAtsCollection, so its start time also counts: a broken source is retried at the normal pace.

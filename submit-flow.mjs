@@ -2,15 +2,36 @@ import { detectSecurityCodeStep, fillSecurityCode, securityCodeButton } from './
 // Final-submit helpers: exact submit-button matching, confirmation detection and review snapshots.
 // Nothing here guesses: when the page is ambiguous the caller gets {status:'blocked'} and nothing is clicked.
 
+const COMMON_SUBMIT = /^(Submit|Submit application|Submit your application|Send application|Complete application|Finish application)$/i;
 const SUBMIT_BUTTONS = {
   workday: /^Submit$/i,
   greenhouse: /^Submit application$/i,
   lever: /^Submit application$/i,
   ashby: /^Submit application$/i,
   smartrecruiters: /^(Submit application|Submit)$/i,
+  workable: COMMON_SUBMIT,
+  recruitee: COMMON_SUBMIT,
+  rippling: COMMON_SUBMIT,
+  pinpoint: COMMON_SUBMIT,
+  bamboohr: COMMON_SUBMIT,
+  jobvite: COMMON_SUBMIT,
+  breezy: COMMON_SUBMIT,
+  gem: COMMON_SUBMIT,
+  dover: COMMON_SUBMIT,
+  teamtailor: COMMON_SUBMIT,
+  jazzhr: COMMON_SUBMIT,
+  personio: COMMON_SUBMIT,
+  comeet: COMMON_SUBMIT,
+  eightfold: COMMON_SUBMIT,
   icims: /^(Submit|Submit application)$/i,
   avature: /^(Submit|Submit application|Submit your application)$/i,
   successfactors: /^(Submit|Submit application|Submit your application)$/i,
+  ukg: COMMON_SUBMIT,
+  adp: COMMON_SUBMIT,
+  taleo: COMMON_SUBMIT,
+  dayforce: COMMON_SUBMIT,
+  paylocity: COMMON_SUBMIT,
+  paycom: COMMON_SUBMIT,
 };
 const CONFIRMATION_TEXT = /thank you for (?:applying|your application)|application (?:has been |was )?(?:successfully )?(?:submitted|received|sent)|successfully (?:submitted|applied)|we(?:'|’)ve received your application|your application is complete\b/i;
 const CONFIRMATION_URL = /(?:^|\/)(?:confirmation|confirmed|thank-?you|thanks|submitted|success|applied)(?:\/|$)/i;
@@ -101,7 +122,6 @@ export async function submitApplicationPage(page, adapterId, { beforeClick, conf
       const codeStep = await detectSecurityCodeStep(page);
       if (codeStep && !securityHandled) {
         if (!securityHandled) await recordVerification('challenge_detected');
-        // One attempt only: a missing email, a wrong code or an ambiguous button ends with a clear user checkpoint.
         if (typeof onSecurityCode !== 'function') return { status: 'unconfirmed', reason: CODE_NEEDED };
         securityHandled = true;
         await recordVerification('waiting_for_code');

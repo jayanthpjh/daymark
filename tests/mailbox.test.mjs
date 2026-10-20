@@ -19,9 +19,9 @@ const draft = (values={}) => ({to:'recruiter@example.test',subject:'Interview av
 
 test('mail history survives service restart, sync is idempotent, and archive is reversible',async t=>{
   const {service,store,demoFile,options}=await fixture(t);await service.sync();await service.sync();
-  const list=await service.list();assert.equal(list.threads.length,3);
+  const list=await service.list();assert.equal(list.threads.length,3);assert.equal(list.unreadCount,2);
   const m=list.threads[0];await service.updateMessage(m.id,{archived:true,starred:true,unread:false});await service.sync();
-  assert.equal((await service.list()).threads.length,2);assert.equal((await service.list({folder:'Archive'})).threads.length,1);
+  assert.equal((await service.list()).threads.length,2);assert.equal((await service.list()).unreadCount,1);assert.equal((await service.list({folder:'Archive'})).threads.length,1);
   const restarted=createMailboxService({...options,store:await createMailboxStore({demoFile})});
   assert.equal((await restarted.list({folder:'Starred'})).threads[0].archived,true);
   await restarted.updateMessage(m.id,{archived:false});assert.equal((await restarted.list()).threads.length,3);
@@ -35,6 +35,9 @@ test('draft revisions prevent lost edits across tabs and persist files across re
 });
 test('mail headers and attachment payloads are validated on the server',()=>{
   assert.throws(()=>validateDraft(draft({to:'victim@example.test\nBcc:evil@example.test'})),/headers/);
+  assert.equal(validateDraft(draft({cc:'one@example.test; two@example.test',bcc:'hidden@example.test'})).cc,'one@example.test, two@example.test');
+  assert.throws(()=>validateDraft(draft({bcc:'person@example.test\r\nCc:other@example.test'})),/comma-separated/);
+  assert.throws(()=>validateDraft(draft({cc:'not-an-address'})),/valid CC/);
   assert.throws(()=>validateDraft(draft({subject:1})),/missing/);
   assert.throws(()=>validateDraft(draft({attachments:[{filename:'a',base64:'invalid!'}]})),/invalid/);
   assert.throws(()=>validateDraft(draft({attachments:Array.from({length:6},()=>({base64:''}))})),/five/);
@@ -114,4 +117,79 @@ test('assistant prompt keeps adversarial mail out of system instructions and for
 test('a lost draft-create response can be retried with a stable client id without duplication',async t=>{
   const {service}=await fixture(t);const id='12345678-1234-4234-8234-123456789abc';const input=draft({revision:0});const first=await service.saveDraft(id,input);const again=await service.saveDraft(id,input);assert.equal(first.draft.id,again.draft.id);assert.equal((await service.list({folder:'Drafts'})).drafts.length,1);
   await assert.rejects(service.saveDraft(id,draft({revision:0,body:'Different unsaved edit'})),e=>e.code==='draft_conflict');
+});
+test('message actions report provider sync, keep snooze local, and expose reversible spam and trash views',async t=>{
+  const calls=[];
+  const {service}=await fixture(t,{updateMessage:async(message,patch)=>{calls.push({message,patch});return {status:'synced',mailbox:message.mailbox,uid:message.uid,uidValidity:message.uidValidity};}});
+  await service.sync();
+  const message=(await service.list()).threads[0];
+  const starred=await service.updateMessage(message.id,{starred:true,unread:false});
+  assert.equal(starred.actionSync.status,'synced');assert.equal(calls.length,1);assert.equal(calls[0].patch.starred,true);
+  await service.updateMessage(message.id,{spam:true});
+  assert.equal((await service.list({folder:'Spam'})).threads.length,1);
+  await service.updateMessage(message.id,{spam:false,trashed:true});
+  assert.equal((await service.list({folder:'Trash'})).threads.length,1);
+  await service.updateMessage(message.id,{trashed:false,snoozedUntil:'2026-10-21T12:00:00.000Z',labels:['Follow up']});
+  assert.equal((await service.thread(message.threadId)).messages[0].snoozedUntil,'2026-10-21T12:00:00.000Z');
+  assert.deepEqual((await service.thread(message.threadId)).messages[0].labels,['Follow up']);
+  assert.equal((await service.list()).threads.some(m=>m.threadId===message.threadId),false);
+  assert.equal((await service.list({folder:'Snoozed'})).threads.length,1);
+  assert.equal((await service.list({query:'label:"Follow up"'})).threads.length,1);
+});
+
+test('provider action failure never reports a local flag change as synced',async t=>{
+  const {service}=await fixture(t,{updateMessage:async()=>{throw new Error('Bridge rejected the flag');}});
+  await service.sync();const message=(await service.list()).threads[0];
+  const result=await service.updateMessage(message.id,{starred:true});
+  assert.equal(result.actionSync.status,'failed');
+  assert.equal((await service.thread(message.threadId)).messages[0].starred,false);
+});
+test('successful provider actions reconcile flags from the next mailbox sync',async t=>{
+  let starred=false;
+  const raw={id:'provider-message',providerMessageKey:'provider-stable',messageId:'<provider@example.test>',mailbox:'INBOX',uid:4,uidValidity:'v1',from:'Recruiter <r@example.test>',senderAddress:'r@example.test',subject:'Interview invitation',text:'Please choose a time.',date:'2026-10-18T10:00:00Z',direction:'incoming',unread:true,starred:false,archived:false,spam:false,trashed:false,attachments:[]};
+  const {service}=await fixture(t,{receive:async()=>({messages:[{...raw,starred}],cursor:{folders:{INBOX:{validity:'v1',lastUid:4,oldest:4,hasOlder:false}}}}),updateMessage:async()=>{starred=true;return {status:'synced',mailbox:'INBOX',uid:4,uidValidity:'v1'};}});
+  await service.sync();const message=(await service.list()).threads[0];await service.updateMessage(message.id,{starred:true});
+  assert.equal((await service.thread(message.threadId)).messages[0].starred,true);
+  starred=false;await service.sync();assert.equal((await service.thread(message.threadId)).messages[0].starred,false);
+});
+test('Cc and Bcc recipients appear in review and are delivered through SMTP',async t=>{
+  let delivered;const {service}=await fixture(t,{send:async message=>{delivered=message;return {accepted:[message.to,message.cc,message.bcc].filter(Boolean).join(',').split(','),rejected:[]};}});
+  const {draft:d}=await service.saveDraft(null,draft({cc:'cc@example.test',bcc:'hidden@example.test'}));
+  const {attempt,preview}=await service.review(d.id,d.revision);
+  assert.equal(preview.cc,'cc@example.test');assert.equal(preview.bcc,'hidden@example.test');
+  await service.send(attempt.id);assert.equal(delivered.cc,'cc@example.test');assert.equal(delivered.bcc,'hidden@example.test');
+});
+test('Gmail-style search operators filter unread messages and attachments without changing message text search',async t=>{
+  const {service}=await fixture(t);await service.sync();
+  assert.equal((await service.list({query:'is:unread'})).threads.length,2);
+  assert.equal((await service.list({query:'has:attachment'})).threads.length,1);
+  assert.equal((await service.list({query:'from:talent@example.test'})).threads.length,1);
+  assert.equal((await service.list({query:'subject:technical assessment'})).threads.length,1);
+});
+test('custom labels are persistent and removable without altering provider folders',async t=>{
+  const {service}=await fixture(t);await service.sync();
+  const created=await service.createLabel('Follow up');assert.equal(created.created,true);assert.equal(created.providerSync.status,'daymark_only');
+  assert.equal((await service.createLabel('follow up')).created,false);
+  const message=(await service.list()).threads[0];await service.updateMessage(message.id,{labels:['Follow up']});
+  assert.equal((await service.list({query:'label:"Follow up"'})).threads.length,1);
+  await service.deleteLabel(created.label.id);
+  assert.equal((await service.list({query:'label:"Follow up"'})).threads.length,0);
+  assert.equal((await service.list()).labels.length,0);
+  await assert.rejects(service.createLabel('bad\nlabel'),e=>e.code==='invalid_label');
+});
+test('user filters apply to new matching messages and sync supported flags to Proton',async t=>{
+  const raw={id:'filter-message',providerMessageKey:'filter-stable',messageId:'<filter@example.test>',providerPresent:true,mailbox:'INBOX',uid:8,uidValidity:'v1',from:'Recruiter <r@example.test>',senderAddress:'r@example.test',subject:'Interview invitation',text:'Please choose a time.',date:'2026-10-18T10:00:00Z',direction:'incoming',unread:true,starred:false,archived:false,spam:false,trashed:false,attachments:[]};
+  let incoming=[raw];
+  const {service}=await fixture(t,{receive:async()=>({messages:incoming,cursor:{folders:{INBOX:{validity:'v1',lastUid:8,oldest:8,hasOlder:false}}}}),updateMessage:async(message,patch)=>({status:'synced',mailbox:message.mailbox,uid:message.uid,uidValidity:message.uidValidity,...patch})});
+  await service.sync();const label=await service.createLabel('Interview');
+  const created=await service.createFilter({from:'r@example.test',subject:'interview',action:'star'});assert.equal(created.providerSync.status,'daymark_only');
+  await service.createFilter({subject:'invitation',action:'label',label:'Interview'});
+  incoming=[raw,{...raw,id:'filter-message-new',providerMessageKey:'filter-stable-new',messageId:'<filter-new@example.test>',uid:9}];
+  await service.sync();const message=(await service.list()).threads.find(m=>m.id==='filter-message-new');
+  assert.equal(message.starred,true);assert.equal(message.providerSync.status,'synced');
+  assert.equal((await service.list({query:'label:Interview'})).threads.length,2);
+  assert.equal((await service.list()).filters.length,2);
+  await service.deleteFilter(created.filter.id);assert.equal((await service.list()).filters.length,1);
+  await assert.rejects(service.createFilter({action:'star'}),e=>e.code==='invalid_filter');
+  await service.deleteLabel(label.label.id);
 });

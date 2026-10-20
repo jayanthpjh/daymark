@@ -8,6 +8,7 @@ export async function authPreflightScreen(page, { authenticated = false, guest =
   const challenge = page.locator('iframe[src*="recaptcha"]:not([src*="size=invisible"]),iframe[src*="hcaptcha"]:not([src*="size=invisible"]),iframe[title*="challenge" i],[data-sitekey]:not([data-size="invisible"]):not(.grecaptcha-badge)').first();
   if (await visible(challenge)) return 'captcha';
   if (await visible(page.locator('input[autocomplete="one-time-code"],input[name*="verification" i],input[name*="otp" i]').first())) return 'verification';
+  if (await visible(page.getByRole('heading', { name: /^(create account|register|sign up)$/i }).first())) return 'authentication';
   if (await visible(page.locator('input[autocomplete="new-password"],input[type="password"][name*="new" i]').first()) ||
       await visible(page.getByRole('heading', { name: /^(reset|change) password$/i }).first())) return 'password_reset';
   if (await visible(page.getByRole('heading', { name: /^(sign in|log in|login|create account|register|sign up)$/i }))) return 'authentication';
@@ -15,6 +16,7 @@ export async function authPreflightScreen(page, { authenticated = false, guest =
   if (await visible(password)) return 'authentication';
   const body = await page.evaluate(() => document.body?.innerText || '').catch(() => '');
   if (/verify (?:your )?(?:email|account)|enter (?:the )?(?:verification|one.time) code|check your (?:email|inbox)/i.test(body)) return 'verification';
+  if (/(?:your )?session (?:has )?(?:expired|timed out)|session expired|sign in to continue|log in to continue/i.test(body)) return 'authentication';
   // Guest forms often carry an invisible-reCAPTCHA notice; only a visible challenge element counts there.
   if (/security challenge|are you human/i.test(body)) return 'captcha';
   // A user profile surface is positive evidence; a guest application form is not.
@@ -35,7 +37,7 @@ export async function assertAuthenticatedBeforeApplicationData(page, options) {
   if (screen === 'guest_only' && options?.guest) return true;
   if (screen === 'guest_only') { const error = new Error('This site requires an applicant account but has no supported sign-in flow; resolve sign-in before continuing. No profile or resume was sent.'); error.authStatus = 'authentication'; throw error; }
   const reasons = {
-    authentication: 'ATS authentication is required before application information can be entered. Complete sign-in in the employer session, then continue.',
+    authentication: 'Your employer session is signed out or expired. Sign in in the Daymark browser, then Continue processing; the saved application step will be checked again.',
     verification: 'ATS verification is required before application information can be entered. Complete verification in the employer session, then continue.',
     password_reset: 'Password recovery needs your review. Finish the reset in the employer session, update the saved ATS password, then continue.',
     captcha: 'Complete the ATS security challenge in the employer session, then continue.',

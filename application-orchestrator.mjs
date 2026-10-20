@@ -19,6 +19,13 @@ const eventForState = state => ({
   submission_uncertain: 'SubmissionUncertain', recoverable_failure: 'CheckpointRecoveryNeeded',
 }[state] || `Application${state.split('_').map(word => word[0].toUpperCase() + word.slice(1)).join('')}`);
 
+export function preparationReadyMessage(task = {}) {
+  if (task.reviewPolicy !== 'final') return 'Resume and cover letter are ready.';
+  return task.autoFill
+    ? 'Tailored documents prepared. Filling continues before your final review.'
+    : 'Tailored documents are ready for your review. Browser filling is paused.';
+}
+
 export function applicationOrchestrationState(task = {}) {
   const checkpointReason = task.checkpoint?.pauseReason || task.recoveryReason || '';
   if (task.submissionOutcome === 'confirmed') return 'submitted';

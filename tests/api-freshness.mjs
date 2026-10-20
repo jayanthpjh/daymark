@@ -30,13 +30,14 @@ const port=await new Promise(r=>{const s=net.createServer();s.listen(0,'127.0.0.
 let child;
 const start=async()=>{
   await seedRegistry();
-  child=spawn(process.execPath,['--import',path.join(dir,'preload.mjs'),'server.mjs'],{env:{...process.env,PORT:String(port),DAYMARK_DATA_DIR:dir,DAYMARK_ENV_PATH:path.join(dir,'env')},stdio:['ignore','ignore','inherit']});
+  child=spawn(process.execPath,['--import',path.join(dir,'preload.mjs'),'server.mjs'],{env:{...process.env,PORT:String(port),DAYMARK_DATA_DIR:dir,DAYMARK_ENV_PATH:path.join(dir,'env'),DAYMARK_DISABLE_SEED_BOARDS:'1'},stdio:['ignore','ignore','inherit']});
   for(let i=0;i<100;i++){try{if((await fetch(`http://127.0.0.1:${port}/api/health`)).ok)return;}catch{}await new Promise(r=>setTimeout(r,100));}
   throw new Error('server did not start');
 };
 // SIGTERM lets the server release its worker lock, so the next start in the same folder is allowed.
 const stop=async()=>{if(!child)return;const done=new Promise(r=>child.once('exit',r));child.kill('SIGTERM');const timer=setTimeout(()=>child?.kill('SIGKILL'),8000);await done;clearTimeout(timer);child=null;await fs.rm(path.join(dir,'worker.lock'),{force:true});};
 const call=async(route,body)=>{const r=await fetch(`http://127.0.0.1:${port}${route}`,body?{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}:{});return {status:r.status,body:await r.json().catch(()=>({}))};};
+const until=async predicate=>{for(let i=0;i<200;i++){const state=(await call('/api/state')).body;if(predicate(state))return state;await new Promise(r=>setTimeout(r,200));}throw new Error('timed out waiting for API state');};
 const collect=async()=>{
   const r=await call('/api/collect',{});assert.equal(r.status,202,JSON.stringify(r.body));
   const id=r.body.task.id;
@@ -48,7 +49,13 @@ const byTitle=(list,title)=>list.find(j=>j.role===title);
 const ok=name=>console.log('ok - '+name);
 try{
   await setListing([1,2,3]);await start();
-  let task=await collect();let list=await jobs();
+  const simultaneous=await Promise.all([call('/api/collect',{}),call('/api/collect',{})]);
+  assert.deepEqual(simultaneous.map(r=>r.status).sort(),[200,202]);
+  assert.equal(simultaneous[0].body.task.id,simultaneous[1].body.task.id,'concurrent page and scheduler starts share one collection');
+  const firstId=simultaneous[0].body.task.id;
+  const initial=await until(s=>s.tasks.some(t=>t.id===firstId&&['completed','failed'].includes(t.status)));
+  let task=initial.tasks.find(t=>t.id===firstId);assert.equal(task.status,'completed',task.message);
+  let list=await jobs();
   assert.equal(list.length,3);assert.ok(list.every(j=>j.board==='acme'&&j.company==='Acme Corporation'&&!j.closedAt));ok('a collection adds the board\'s jobs with their board and the real company name');
   const stamp=list[0].last_seen_at;
   await stop();await setListing([1,2]);await start();

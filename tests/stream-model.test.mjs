@@ -27,3 +27,11 @@ test('skipped roles and routed recruiter mail appear as SKIPPED and ACTION rows'
   assert.match(m.events.find(e=>e.id==='mail-m2').detail,/submitted/);
   assert.equal(m.events[0].id,'mail-m1','newest first');
 });
+test('older needs-you work stays in the stream and marks the fill stage as waiting',()=>{
+  const stuck={id:'capital-one-login',type:'fill',jobId:'capital-one',company:'Capital One',role:'Data Engineer',status:'needs_you',stage:'Sign in to continue',message:'Complete password recovery, then continue processing.',updatedAt:iso(3600),createdAt:iso(7200),checkpoint:{pauseReason:'entry'}};
+  const collects=Array.from({length:8},(_,i)=>({id:`collect-${i}`,type:'collect',status:'completed',updatedAt:iso(i),createdAt:iso(i)}));
+  const model=streamModel({...base,tasks:[stuck,...collects]},now);
+  assert.ok(model.events.some(event=>event.id===stuck.id),'actionable application work must survive recent collection events');
+  assert.equal(model.stages.find(stage=>stage.id==='fill').status,'waiting');
+  assert.match(model.stages.find(stage=>stage.id==='fill').sub,/1 waiting/);
+});

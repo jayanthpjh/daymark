@@ -34,17 +34,19 @@ test('dispatches only a task identifier and leaves lane exclusivity to the task 
     WorkerClass: WorkerMock,
     processTask: async id => { processed.push(id); },
   });
-  await queue.enqueue('task-abc');
-  await processor({ data: { taskId: 'task-abc' } });
+  await queue.enqueue('task-abc', 1);
+  await processor({ data: { taskId: 'task-abc', generation: 1 } });
   assert.equal(queue.worker.options.concurrency, 2);
   assert.equal(queueOptions.prefix, 'daymark');
-  assert.deepEqual(calls[0].data, { taskId: 'task-abc' });
+  assert.deepEqual(calls[0].data, { taskId: 'task-abc', generation: 1 });
   assert.equal(calls[0].options.attempts, 1);
+  assert.equal(calls[0].data.generation, 1);
+  assert.match(calls[0].options.jobId, /-g1$/);
   assert.deepEqual(processed, ['task-abc']);
   await assert.rejects(() => processor({ data: {} }), /Invalid Daymark queue task identifier/);
 });
 
-test('runs document and browser callbacks concurrently when separate lanes are available', async () => {
+test('configures two worker slots so collection and one application can progress independently', async () => {
   let processor;
   let queue;
   class QueueMock {
@@ -65,5 +67,17 @@ test('runs document and browser callbacks concurrently when separate lanes are a
   await Promise.all(['prepare-task','fill-task'].map(taskId => processor({ data: { taskId } })));
   assert.equal(queue.worker.options.concurrency, 2);
   assert.equal(maximum, 2);
+  await queue.close();
+});
+
+test('uses a distinct BullMQ job id for each explicit resume generation', async () => {
+  const calls = [];
+  class QueueMock { constructor() {} async add(name, data, options) { calls.push({ data, options }); return options.jobId; } async waitUntilReady() {} async close() {} }
+  class WorkerMock { constructor(name, process) { this.process = process; } async waitUntilReady() {} async close() {} }
+  const queue = createRedisTaskQueue({ connectionString: 'redis://localhost:6379/0', QueueClass: QueueMock, WorkerClass: WorkerMock, processTask: async () => {} });
+  await queue.enqueue('task-abc', 2);
+  await queue.enqueue('task-abc', 3);
+  assert.notEqual(calls[0].options.jobId, calls[1].options.jobId);
+  assert.deepEqual(calls.map(item => item.data.generation), [2, 3]);
   await queue.close();
 });

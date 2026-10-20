@@ -3,7 +3,7 @@ import { compensationForJob } from './public/workflow.js';
 
 export const defaultAutoApply = { enabled: true, minMatch: 70, dailyCap: 10, maxAgeDays: 7 };
 // Collection cadence in minutes (0 = off, otherwise 15 to 1440) and the oldest posting kept, by its posted date (0 = no limit).
-export const defaultJobPulling = { scheduleMinutes: 60, maxAgeDays: 7 };
+export const defaultJobPulling = { scheduleMinutes: 60, maxAgeDays: 60 };
 export const defaultSkipRules = { clearance: true, minSalary: 0, excludedCompanies: [], excludedTitles: [], remoteOnly: false };
 
 const CLEARANCE = /(?:security|secret|top secret|ts\/sci|public trust)[^.\n]{0,40}clearance|clearance[^.\n]{0,40}(?:required|active|must|obtain|eligib|ts\/sci|top secret|secret)|\bts\/sci\b|active (?:secret|top secret|ts) /i;

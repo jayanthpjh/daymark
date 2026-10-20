@@ -1,4 +1,4 @@
-# Local stack: PostgreSQL, Redis and the browser worker. Everything is named daymark-* so it is easy to find in Docker.
+# Local one-user stack: API, PostgreSQL, Redis, SearXNG discovery, and the Playwright worker. Only the dashboard and browser viewer are published to loopback.
 name: daymark
 
 services:
@@ -10,8 +10,6 @@ services:
       POSTGRES_DB: daymark
       POSTGRES_USER: daymark
       POSTGRES_PASSWORD: "${DAYMARK_POSTGRES_PASSWORD:?Run npm run worker:setup first}"
-    ports:
-      - "127.0.0.1:55432:5432"
     volumes:
       - daymark-postgres-data:/var/lib/postgresql/data
     mem_limit: 512m
@@ -32,8 +30,6 @@ services:
     image: redis:7.4-alpine
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes", "--maxmemory", "96mb", "--maxmemory-policy", "noeviction"]
-    ports:
-      - "127.0.0.1:56379:6379"
     volumes:
       - daymark-redis-data:/data
     mem_limit: 128m
@@ -47,6 +43,91 @@ services:
       options:
         max-size: 10m
         max-file: "3"
+
+  searxng:
+    container_name: daymark-searxng
+    image: searxng/searxng:latest
+    restart: unless-stopped
+    environment:
+      SEARXNG_BASE_URL: http://searxng:8080/
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "2"
+
+  daymark-api:
+    container_name: daymark-api
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    init: true
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    user: "${DAYMARK_UID:?Run npm run worker:setup first}:${DAYMARK_GID:?Run npm run worker:setup first}"
+    environment:
+      DAYMARK_ROLE: api
+      DAYMARK_HOST: 0.0.0.0
+      DAYMARK_DATA_DIR: "${DAYMARK_DATA_DIR:?Run npm run worker:setup first}"
+      DAYMARK_ENV_PATH: /app/.env
+      DAYMARK_DATABASE_URL: "postgresql://daymark:${DAYMARK_POSTGRES_PASSWORD:?Run npm run worker:setup first}@postgres:5432/daymark"
+      DAYMARK_REDIS_URL: redis://redis:6379/0
+      DAYMARK_SECRET_BACKEND: file
+      DAYMARK_SECRETS_DIR: /run/secrets
+      DAYMARK_NVIDIA_LIVE_APPROVED: "${DAYMARK_NVIDIA_LIVE_APPROVED:-false}"
+      DAYMARK_HTML_CRAWL_TERMS_APPROVED_HOSTS: "${DAYMARK_HTML_CRAWL_TERMS_APPROVED_HOSTS:-}"
+      DAYMARK_LOCAL_LLM_DISABLED: "true"
+      SEARXNG_URL: "${SEARXNG_URL:-http://searxng:8080}"
+      DAYMARK_BRIDGE_HOSTS: host.docker.internal
+      PROTON_BRIDGE_HOST: host.docker.internal
+      PROTON_BRIDGE_PORT: "1143"
+      PROTON_BRIDGE_SMTP_PORT: "1025"
+      DAYMARK_DISABLE_MAIL_AUTOMATION: "true"
+      DAYMARK_DISABLE_MAIL_FORWARDING: "true"
+      DAYMARK_AUTOMATION_DELAY_MS: "60000"
+    volumes:
+      - type: bind
+        source: ./.env
+        target: /app/.env
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${DAYMARK_DATA_DIR:?Run npm run worker:setup first}
+        target: ${DAYMARK_DATA_DIR:?Run npm run worker:setup first}
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${DAYMARK_DATA_DIR:?Run npm run worker:setup first}/secrets
+        target: /run/secrets
+        bind:
+          create_host_path: false
+    ports:
+      - "127.0.0.1:4173:4173"
+    mem_limit: 768m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:4173/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 30s
 
   application-worker:
     container_name: daymark-worker
@@ -68,27 +149,36 @@ services:
     environment:
       DAYMARK_ROLE: worker
       DAYMARK_DATA_DIR: "${DAYMARK_DATA_DIR:?Run npm run worker:setup first}"
+      DAYMARK_ENV_PATH: /app/.env
       DAYMARK_BROWSER_PROFILE_DIR: "${DAYMARK_DATA_DIR:?Run npm run worker:setup first}/docker-browser-profile-recovery"
-      DAYMARK_ATS_CREDENTIALS_PATH: /run/secrets/daymark-ats-credentials
+      DAYMARK_ATS_CREDENTIALS_PATH: /run/daymark-secrets/ats-credentials.json
+      DAYMARK_ATS_CREDENTIALS_KEY_PATH: /run/daymark-secrets/ats-credential-key
       DAYMARK_WORKER_PORT: "4174"
+      DAYMARK_NVIDIA_LIVE_APPROVED: "${DAYMARK_NVIDIA_LIVE_APPROVED:-false}"
+      DAYMARK_HTML_CRAWL_TERMS_APPROVED_HOSTS: "${DAYMARK_HTML_CRAWL_TERMS_APPROVED_HOSTS:-}"
+      DAYMARK_LOCAL_LLM_DISABLED: "true"
+      SEARXNG_URL: "${SEARXNG_URL:-http://searxng:8080}"
       PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
       HOME: /tmp
       DISPLAY: :99
     volumes:
+      - type: bind
+        source: ./.env
+        target: /app/.env
+        read_only: true
+        bind:
+          create_host_path: false
       - type: bind
         source: ${DAYMARK_DATA_DIR:?Run npm run worker:setup first}
         target: ${DAYMARK_DATA_DIR:?Run npm run worker:setup first}
         bind:
           create_host_path: false
       - type: bind
-        source: ${DAYMARK_DATA_DIR:?Run npm run worker:setup first}/worker-control/ats-credentials-mask
-        target: ${DAYMARK_DATA_DIR:?Run npm run worker:setup first}/ats-credentials.json
+        source: ${DAYMARK_DATA_DIR:?Run npm run worker:setup first}/secrets
+        target: /run/daymark-secrets
         read_only: true
         bind:
           create_host_path: false
-    secrets:
-      - source: ats_credentials
-        target: daymark-ats-credentials
     ports:
       - "127.0.0.1:6080:6080"
     shm_size: 1gb
@@ -112,10 +202,6 @@ services:
       timeout: 3s
       retries: 3
       start_period: 20s
-
-secrets:
-  ats_credentials:
-    file: ${DAYMARK_DATA_DIR:?Run npm run worker:setup first}/ats-credentials.json
 
 volumes:
   daymark-postgres-data:

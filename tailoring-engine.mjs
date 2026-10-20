@@ -261,6 +261,17 @@ export async function tailorResume({ mode = 'honest', source, description, profi
   return { ...result, keywordScore: { before: before.score, after: after.score, matched: after.matched, missing: after.missing }, prep: interviewPrep(result.claims) };
 }
 
+export function tailoringFallbackReason(error) {
+  const message = String(error?.message || error || 'Unknown model error.');
+  if (message.includes('NVIDIA production use is not approved for real application data')) {
+    return 'NVIDIA’s free hosted API is not enabled for real application data. No request was sent; Daymark kept your original wording and source-backed preparation available.';
+  }
+  if (/factual|unsupported|quality gate|evidence/i.test(message)) {
+    return `Factual review did not pass (${message.slice(0, 160)}); kept your original wording.`;
+  }
+  return `NVIDIA could not create a verified draft (${message.slice(0, 160)}); kept your original wording.`;
+}
+
 // The invented claims actually present in a final resume, whoever wrote them (the model, or the user while editing).
 export function claimsInResume({ resume, source, description }) {
   const analysis = analyzeJob(description);

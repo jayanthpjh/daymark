@@ -4,7 +4,7 @@ import net from 'node:net';
 import {spawn} from 'node:child_process';import fs from 'node:fs/promises';import os from 'node:os';import path from 'node:path';import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 const dir=await fs.mkdtemp(path.join(os.tmpdir(),'daymark-agent-actions-'));await fs.mkdir(path.join(dir,'files'));
-await fs.writeFile(path.join(dir,'env'),'NVIDIA_API_KEY=synthetic\n');
+await fs.writeFile(path.join(dir,'env'),'NVIDIA_API_KEY=synthetic\nLLM_HOSTED_ENABLED=true\nDAYMARK_NVIDIA_LIVE_APPROVED=true\n');
 const plan={reply:'Ready when you are.',calls:[
   {name:'submit_application',args:{taskId:'f1'}},
   {name:'send_mail',args:{to:'sam@acme.example',subject:'Availability',body:'Thursday works for me.'}},

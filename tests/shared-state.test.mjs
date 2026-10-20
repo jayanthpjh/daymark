@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { createSharedJsonStore, mergeStateSnapshots } from '../shared-state.mjs';
+import { acquireFileLock, createSharedJsonStore, mergeStateSnapshots } from '../shared-state.mjs';
 
 test('merges independent task progress and pause updates without changing task or checkpoint contracts', () => {
   const base = { tasks: [{ id: 'task-1', status: 'running', message: 'Filling', checkpoint: { id: 'cp-1', questions: [{ id: 'q-1' }] } }] };
@@ -140,6 +140,19 @@ test('keeps committed state intact when abandoned temporary files are present', 
     const saved = await store.read();
     assert.deepEqual(saved.jobs.map(job => job.id), ['committed-job']);
     assert.deepEqual(saved.tasks.map(task => task.id), ['new-task']);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('refuses writes after a shared-state file lock lease is lost', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'daymark-state-lock-lost-'));
+  const lockFile = path.join(directory, 'state.lock');
+  try {
+    const release = await acquireFileLock(lockFile, { staleMs: 1000, heartbeatMs: 10 });
+    await fs.writeFile(lockFile, 'other-owner', { mode: 0o600 });
+    await assert.rejects(release.assertOwned(), /state lock lease was lost/i);
+    await release();
   } finally {
     await fs.rm(directory, { recursive: true, force: true });
   }

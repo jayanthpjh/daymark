@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { launchApplicationBrowser } from '../application-browser.mjs';
+import { canReuseApplicationContext, launchApplicationBrowser } from '../application-browser.mjs';
 
 test('launches an isolated Playwright browser without spawning system Chrome', async () => {
   let captured;
@@ -39,4 +39,12 @@ test('ordinary processing and old handoff flags cannot expose the backend browse
  const {shouldShowApplicationBrowser}=await import('../application-browser.mjs');
  for(const task of [{},{manualHandoff:true},{watchBrowser:true},{visibleBrowserApproved:true}])assert.equal(shouldShowApplicationBrowser(task),false);
  assert.equal(shouldShowApplicationBrowser({manualHandoff:true,visibleBrowserApproved:true}),true);
+});
+
+test('reopens a saved browser profile when a manual checkpoint needs a visible browser',()=>{
+ const context={pages:()=>[]};
+ assert.equal(canReuseApplicationContext(context,true,false),false);
+ assert.equal(canReuseApplicationContext(context,false,true),false);
+ assert.equal(canReuseApplicationContext(context,true,true),true);
+ assert.equal(canReuseApplicationContext({pages:()=>{throw new Error('closed');}},true,true),false);
 });

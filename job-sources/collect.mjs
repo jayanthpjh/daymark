@@ -11,6 +11,9 @@ import { splitRoles, titleMatchesRole, locationMatches, ruleFilter, scorePosting
 import { detectATSAdapter } from '../ats-adapters.mjs';
 import { DAY } from './registry.mjs';
 import { withinAge } from './freshness.mjs';
+import { collectionRoleTerms, matchesRoleTargets, roleFamiliesForTitle } from './role-families.mjs';
+
+export const DEFAULT_AGGREGATORS = Object.freeze(['adzuna', 'usajobs', 'themuse', 'remotive', 'remoteok', 'arbeitnow', 'hn', 'jobicy', 'himalayas']);
 
 /** The id a feed job gets from a posting. Snapshots use the same ids so a listing can be compared with the feed. */
 export const jobIdOf = posting => `ats-${posting.id}`;
@@ -31,18 +34,18 @@ export function withDeadline(promise, ms, label = 'board') {
   return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
 }
 
-export async function pollBoard(registry, record, { http, roles, canFill, snapshotDetail = false, boardDeadlineMs = 120_000, boardConcurrencyContext = {} }) {
+export async function pollBoard(registry, record, { http, roles, targetRoles = roles, roleFamilies = [], canFill, snapshotDetail = false, boardDeadlineMs = 120_000, boardConcurrencyContext = {} }) {
   const source = ATS_SOURCES[record.ats];
   if (!source) return { postings: [], result: await registry.recordPoll(record, { ok: false, error: `No module for ${record.ats}`, status: 404 }) };
   try {
-    const raw = await withDeadline(source.fetchBoard(record, { http, searchTerms: roles.slice(0, 6), wantDetail: p => !roles.length || titleMatchesRole(p.title, roles), ...boardConcurrencyContext }), boardDeadlineMs, record.key);
+    const raw = await withDeadline(source.fetchBoard(record, { http, searchTerms: roles.slice(0, 6), wantDetail: p => (!targetRoles.length && !roleFamilies.length) || titleMatchesRole(p.title, targetRoles) || roleFamiliesForTitle(p.title).some(id => roleFamilies.includes(id)), ...boardConcurrencyContext }), boardDeadlineMs, record.key);
     const postings = raw.map(r => normalizePosting({ ...r, company: r.company === record.token ? (record.company || r.company) : r.company }, { canFill })).filter(Boolean);
     // Everything the board listed, before role filtering. Only a complete list can later show that a job was taken down.
     const complete = !(raw.truncated || source.snapshot === 'partial');
     const openIds = complete ? postings.map(jobIdOf) : null;
     // The trial keeps a short description of each open job so a later run can show which ones disappeared.
     const openItems = complete && snapshotDetail ? postings.slice(0, 400).map(p => ({ id: jobIdOf(p), url: p.applyUrl, title: p.title, company: p.company })) : undefined;
-    const matches = roles.length ? postings.filter(p => titleMatchesRole(p.title, roles)) : postings;
+    const matches = (targetRoles.length || roleFamilies.length) ? postings.filter(p => titleMatchesRole(p.title, targetRoles) || roleFamiliesForTitle(p.title).some(id => roleFamilies.includes(id))) : postings;
     const updated = await registry.recordPoll({ ...record, company: record.company || postings[0]?.company || null }, { ok: true, jobCount: postings.length, matchCount: matches.length });
     return { postings: matches, result: updated, openIds, openItems };
   } catch (error) {
@@ -55,17 +58,18 @@ export async function pollBoard(registry, record, { http, roles, canFill, snapsh
  */
 export async function runCollection({
   registry, http = createHttp(), profile = {}, rules = {}, config = {}, embed = null, canFill = defaultCanFill,
-  aggregators = ['adzuna', 'usajobs', 'themuse', 'remotive', 'remoteok', 'arbeitnow', 'hn'], maxBoardsPerRun = 800, boardConcurrency = 6,
-  commonCrawl = false, crawlEveryMs = 30 * DAY, crawlOptions = {}, maxAgeDays = 0, snapshotDetail = false, onProgress = () => {}, now = Date.now,
+  aggregators = DEFAULT_AGGREGATORS, maxBoardsPerRun = 800, boardConcurrency = 6, onPostings = async () => {},
+  commonCrawl = false, crawlEveryMs = 30 * DAY, crawlOptions = {}, maxAgeDays = 0, snapshotDetail = false, scoreResults = true, onProgress = () => {}, now = Date.now,
 } = {}) {
-  const roles = splitRoles(profile.roleSearch), locations = splitRoles(profile.locationSearch);
+  const roles = splitRoles(profile.roleSearch), roleFamilies = Array.isArray(profile.roleFamilies) ? profile.roleFamilies : [], locations = splitRoles(profile.locationSearch);
+  const queryRoles = collectionRoleTerms(profile.roleSearch, roleFamilies, { rotation: Math.floor(now() / (5 * 60 * 1000)) });
   const stats = { discovered: 0, polled: 0, dead: 0, aggregatorPostings: 0, errors: {} };
   const snapshots = {};
 
   onProgress(10, 'Discovering job boards…');
-  if (config.SEARXNG_URL && roles.length) {
+  if (config.SEARXNG_URL && queryRoles.length) {
     try {
-      const { boards } = await discoverSearx(http, config.SEARXNG_URL, buildQueries(roles, locations));
+      const { boards } = await discoverSearx(http, config.SEARXNG_URL, buildQueries(queryRoles, locations, { rotation: Math.floor(now() / (5 * 60 * 1000)) }));
       stats.discovered += (await registry.add(boards, 'searxng')).length;
     } catch (error) { stats.errors.searxng = error.message; }
   }
@@ -83,17 +87,25 @@ export async function runCollection({
   onProgress(25, 'Reading free job aggregators…');
   let aggregated = [];
   if (aggregators.length) {
-    const agg = await collectAggregators({ http, config, roles, locations }, { enabled: aggregators.filter(a => AGGREGATORS[a]) });
+    const agg = await collectAggregators({ http, config, roles: queryRoles, locations, registry, now }, { enabled: aggregators.filter(a => AGGREGATORS[a]) });
     Object.assign(stats.errors, agg.errors);
     stats.discovered += (await registry.add(agg.boards, 'aggregator')).length;
     aggregated = agg.postings.map(p => normalizePosting(p, { canFill })).filter(Boolean);
     stats.aggregatorPostings = aggregated.length;
+    const eligible = aggregated.filter(p => (!roles.length && !roleFamilies.length) || matchesRoleTargets(p.title, profile.roleSearch, roleFamilies))
+      .filter(p => withinAge(p.postedAt, maxAgeDays, now()) && locationMatches(p, locations) && !ruleFilter(p, rules));
+    if (eligible.length) await onPostings(eligible, { source: 'aggregator' });
   }
 
   onProgress(40, 'Polling due employer boards…');
-  const due = await registry.due({ limit: maxBoardsPerRun });
+  let due = await registry.due({ limit: maxBoardsPerRun });
+  if (!due.length && typeof registry.leastRecentlyPolled === 'function') {
+    due = await registry.leastRecentlyPolled({ limit: Math.min(80, maxBoardsPerRun) });
+  }
   const polled = await mapPool(due, boardConcurrency, async (record, i) => {
-    const out = await pollBoard(registry, record, { http, roles, canFill, snapshotDetail });
+    const out = await pollBoard(registry, record, { http, roles: queryRoles, targetRoles: roles, roleFamilies, canFill, snapshotDetail });
+    const eligible = out.postings.filter(p => withinAge(p.postedAt, maxAgeDays, now()) && locationMatches(p, locations) && !ruleFilter(p, rules));
+    if (eligible.length) await onPostings(eligible, { source: 'ats', board: record.key });
     if (i % 20 === 0) onProgress(40 + Math.min(30, Math.floor((i / Math.max(1, due.length)) * 30)), `Polled ${i + 1} of ${due.length} boards…`);
     return out;
   });
@@ -109,16 +121,17 @@ export async function runCollection({
 
   onProgress(75, 'Filtering and scoring matches…');
   // Aggregator copies only matter when they fit the roles; direct ATS copies win on duplicates.
-  const aggregatedMatches = aggregated.filter(p => !roles.length || titleMatchesRole(p.title, roles));
-  // Counts for the trial report: how many postings came from boards, how many from aggregators, and what de-duplication removed.
+  const aggregatedMatches = aggregated.filter(p => (!roles.length && !roleFamilies.length) || matchesRoleTargets(p.title, profile.roleSearch, roleFamilies));
   stats.directPostings = direct.length; stats.aggregatorMatches = aggregatedMatches.length; stats.beforeDedupe = direct.length + aggregatedMatches.length;
   let postings = dedupePostings([...direct, ...aggregatedMatches]);
   stats.afterDedupe = postings.length;
   postings = postings.filter(p => withinAge(p.postedAt, maxAgeDays, now()) && locationMatches(p, locations) && !ruleFilter(p, rules));
-  const scored = await scorePostings(postings, { profileText: profile.masterResumeText || profile.resumeText || '', roles, embed });
-  scored.sort((a, b) => Number(b.posting.canFill) - Number(a.posting.canFill) || b.score - a.score);
-  stats.kept = scored.length;
-  return { postings: scored, stats, snapshots };
+  const results = scoreResults
+    ? await scorePostings(postings, { profileText: profile.skills || profile.headline || profile.masterResumeText || profile.resumeText || '', roles, roleFamilies, embed })
+    : postings.map(posting => ({ posting }));
+  if (scoreResults) results.sort((a, b) => Number(b.posting.canFill) - Number(a.posting.canFill) || b.score - a.score);
+  stats.kept = results.length;
+  return { postings: results, stats, snapshots };
 }
 
 /** Map a scored posting to the Daymark job record used by the feed, auto-apply and the UI. */
@@ -127,10 +140,18 @@ export function toDaymarkJob({ posting: p, score, why }, nowIso = new Date().toI
     id: jobIdOf(p), sourceId: p.sourceId, board: p.board || '', company: p.company, role: p.title,
     location: p.locations.join(' · ') || (p.remoteType === 'remote' ? 'Remote' : 'Location not listed'),
     posted: p.postedAt, source: p.ats ? `${p.ats} board` : p.source, salary: p.salary?.text || '', tags: p.tags.slice(0, 5),
-    url: p.applyUrl, description: p.description, match: score, matchWhy: why,
-    ats: p.ats, applyMode: p.applyMode, remoteType: p.remoteType, seniority: p.seniority, yearsExperience: p.yearsExperience,
-    sponsorship: p.sponsorship, clearance: p.clearance, dedupeKey: p.dedupeKey, first_seen_at: nowIso, last_seen_at: nowIso,
+    url: p.applyUrl, description: p.description, logoUrl: p.logoUrl || '', match: score, matchWhy: why,
+    ats: p.ats, discoverySource: p.source || '', sourceUrl: p.sourceUrl || '', applyMode: p.applyMode, remoteType: p.remoteType, seniority: p.seniority, yearsExperience: p.yearsExperience,
+    sponsorship: p.sponsorship, clearance: p.clearance, roleFamilies: roleFamiliesForTitle(p.title), dedupeKey: p.dedupeKey, first_seen_at: nowIso, last_seen_at: nowIso,
   };
+}
+
+export function hydrateMissingDescription(job, description, nowIso = new Date().toISOString()) {
+  const text = String(description ?? '').trim();
+  if (!job || String(job.description ?? '').trim() || !text) return false;
+  job.description = text.slice(0, 28_000);
+  job.updatedAt = nowIso;
+  return true;
 }
 
 /** Drop scored postings already in the feed (same apply URL or same title/company/location). */

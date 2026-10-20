@@ -1,10 +1,10 @@
-// Dynamic adapters: for career sites without a built-in adapter, find the real application form from the page
-// itself, remember what was learned per host, and keep human review until a submission there has been confirmed.
+// Dynamic adapters: for career sites without a built-in adapter (or built-in ATS pages that open on a job description tab first),
+// find the real application form from the page itself, remember what was learned per host, and keep human review.
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
 export const DYNAMIC_SUBMIT = /^(submit( your)?( application)?|send application|complete application|finish application)$/i;
-const APPLY_TEXT = /^(apply( now| today| here| online| for this (job|role|position)| to this (job|role|position)| with (resume|cv)| manually| without linkedin)?|i['’]m interested|start (your |an )?application|begin application|continue to (the )?application|submit (your )?(resume|cv))$/i;
+const APPLY_TEXT = /^(apply( now| today| here| online| for this (job|role|position)| to this (job|role|position)| with (resume|cv)| manually| without linkedin)?|application|i['’]m interested|start (your |an )?application|begin application|continue to (the )?application|submit (your )?(resume|cv))$/i;
 // Login-walled aggregators: filling them violates their terms and needs the user's own session.
 const BLOCKED_HOST = /(^|\.)(linkedin|indeed|glassdoor|ziprecruiter|monster|simplyhired|facebook|x|twitter)\.com$/i;
 
@@ -18,7 +18,7 @@ export function dynamicAdapterFor(hostname) {
 
 // A posting page is full of search boxes, filters and job-alert signups; only an applicant form counts:
 // a resume upload, or at least three applicant fields, inside a form that is not a job alert.
-async function hasForm(page) {
+export async function hasForm(page) {
   try {
     return await page.evaluate(() => {
       const applicant = /first.?name|last.?name|full.?name|your name|^name$|e-?mail|phone|mobile|resume|\bcv\b|cover.?letter|linkedin|street|address|postal|zip/i;
@@ -41,7 +41,7 @@ async function hasForm(page) {
 const needsOneTimeCode = page => page.evaluate(() => /verify with a one-time (text )?code|enter the (one-time|verification) code we sent|continue with (email|phone)/i.test(document.body?.innerText || '')).catch(() => false);
 
 async function clickApply(page, context, clicked) {
-  const controls = page.locator('a,button,[role="button"],input[type="submit"],input[type="button"]');
+  const controls = page.locator('a,button,[role="button"],[role="tab"],input[type="submit"],input[type="button"]');
   const count = Math.min(await controls.count().catch(() => 0), 400);
   for (let i = 0; i < count; i++) {
     const control = controls.nth(i);
@@ -59,11 +59,11 @@ async function clickApply(page, context, clicked) {
 // Opens the application from a posting page, following up to three steps (Apply → "how do you want to apply" → form).
 export async function enterDynamicApplication(page, context, { detect = () => null, settleMs = 2500 } = {}) {
   if (await hasForm(page)) return { page, how: 'direct', applyText: '' };
-  const clicked = new Set();let current = page, how = 'none', applyText = '';
+  const clicked = new Set(); let current = page, how = 'none', applyText = '';
   for (let hop = 0; hop < 3; hop++) {
     const result = await clickApply(current, context, clicked);
     if (!result) break;
-    applyText ||= result.text;how = result.opened ? 'popup' : 'click';
+    applyText ||= result.text; how = result.opened ? 'popup' : 'click';
     if (result.opened) current = result.opened;
     await current.waitForLoadState('domcontentloaded').catch(() => {});
     await current.waitForTimeout(settleMs).catch(() => {});

@@ -25,9 +25,12 @@ const CHECKS = {
   smartrecruiters: (b, http) => b.jobId && byStatus(http, `https://api.smartrecruiters.com/v1/companies/${encodeURIComponent(b.token)}/postings/${encodeURIComponent(b.jobId)}`, 'smartrecruiters'),
   workable: (b, http) => b.jobId && byStatus(http, `https://apply.workable.com/api/v2/accounts/${encodeURIComponent(b.token)}/jobs/${encodeURIComponent(b.jobId)}`, 'workable'),
   workday: (b, http) => b.jobId && byStatus(http, `https://${b.host}/wday/cxs/${b.tenant}/${b.site}/job/${b.jobId}`, 'workday'),
-  // Ashby and Recruitee have no single-posting endpoint that is documented, so the board list is the answer.
+  // Ashby, Recruitee, Pinpoint, BambooHR, Breezy, and Rippling check the board list or job page status.
   ashby: (b, http) => b.jobId && inList(http, `https://api.ashbyhq.com/posting-api/job-board/${encodeURIComponent(b.token)}`, 'ashby', d => (d.jobs ?? []).some(j => String(j.id) === b.jobId || String(j.jobUrl || '').includes(b.jobId))),
   recruitee: (b, http) => b.jobId && inList(http, `https://${encodeURIComponent(b.token)}.recruitee.com/api/offers/`, 'recruitee', d => (d.offers ?? []).some(o => String(o.slug) === b.jobId || String(o.careers_url || '').includes(`/o/${b.jobId}`))),
+  pinpoint: (b, http) => b.jobId && inList(http, `https://${encodeURIComponent(b.token)}.pinpointhq.com/postings.json`, 'pinpoint', d => { const list = Array.isArray(d) ? d : (d.data ?? d.postings ?? []); return list.some(j => String(j.id) === b.jobId || String(j.url || '').includes(b.jobId)); }),
+  bamboohr: (b, http) => b.jobId && inList(http, `https://${encodeURIComponent(b.token)}.bamboohr.com/careers/list`, 'bamboohr', d => (d.result ?? []).some(j => String(j.id) === b.jobId)),
+  breezy: (b, http) => b.jobId && inList(http, `https://${encodeURIComponent(b.token)}.breezy.hr/json`, 'breezy', d => (Array.isArray(d) ? d : []).some(j => String(j.id) === b.jobId || String(j.friendly_id) === b.jobId)),
 };
 
 // Any other site: a missing page, or a redirect that lands on the board's front page, means the posting is gone.

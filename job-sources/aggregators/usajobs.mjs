@@ -9,7 +9,7 @@ export async function fetchPostings({ http, config, roles = [], locations = [], 
     for (const item of data.SearchResult?.SearchResultItems ?? []) {
       const d = item.MatchedObjectDescriptor ?? {}, pay = d.PositionRemuneration?.[0];
       out.push({
-        source: id, sourceId: item.MatterhornObjectId, title: d.PositionTitle, company: d.OrganizationName || d.DepartmentName,
+        source: id, sourceId: item.MatterhornObjectId, sourceUrl: d.PositionURI, title: d.PositionTitle, company: d.OrganizationName || d.DepartmentName,
         locations: [d.PositionLocationDisplay].filter(Boolean), applyUrl: d.ApplyURI?.[0] || d.PositionURI, postedAt: toIso(d.PublicationStartDate),
         description: [d.UserArea?.Details?.JobSummary, d.QualificationSummary].filter(Boolean).join('\n'),
         salary: pay ? { min: Number(pay.MinimumRange), max: Number(pay.MaximumRange), currency: 'USD', period: /hour/i.test(pay.Description ?? '') || pay.RateIntervalCode === 'PH' ? 'hour' : 'year' } : null,

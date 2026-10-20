@@ -29,10 +29,12 @@ export function createRedisTaskQueue({ connectionString, processTask, QueueClass
   const worker = new WorkerClass(DAYMARK_QUEUE_NAME, async job => {
     const taskId = job?.data?.taskId;
     if (typeof taskId !== 'string' || !taskId || taskId.length > 200) throw new Error('Invalid Daymark queue task identifier.');
-    return processTask(taskId);
+    const generation = job?.data?.generation ?? 0;
+    if (!Number.isSafeInteger(generation) || generation < 0) throw new Error('Invalid Daymark queue generation.');
+    return processTask(taskId, generation);
   }, {
     ...options,
-    // Preparation and browser work may overlap; the server keeps one lease per lane.
+    // One application task and one independent collection can run together.
     concurrency: 2,
     lockDuration: 120_000,
     stalledInterval: 30_000,
@@ -43,10 +45,11 @@ export function createRedisTaskQueue({ connectionString, processTask, QueueClass
 
   // Queue payloads carry only a task ID. Employer data, answers, files, and credentials
   // stay in the local state store and scoped worker filesystem.
-  async function enqueue(taskId) {
+  async function enqueue(taskId, generation = 0) {
     if (typeof taskId !== 'string' || !taskId || taskId.length > 200) throw new Error('A valid Daymark task identifier is required.');
-    const jobId = `task-${Buffer.from(taskId).toString('base64url')}`;
-    return queue.add('process-application-task', { taskId }, {
+    if (!Number.isSafeInteger(generation) || generation < 0) throw new Error('A valid Daymark queue generation is required.');
+    const jobId = `task-${Buffer.from(taskId).toString('base64url')}-g${generation}`;
+    return queue.add('process-application-task', { taskId, generation }, {
       jobId,
       attempts: 1,
       removeOnComplete: true,

@@ -1,6 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applicationOrchestrationState, syncApplicationOrchestration } from '../application-orchestrator.mjs';
+import { applicationOrchestrationState, preparationReadyMessage, syncApplicationOrchestration } from '../application-orchestrator.mjs';
+
+test('says filling is paused when preparation was queued without autofill', () => {
+  assert.equal(preparationReadyMessage({ reviewPolicy: 'final', autoFill: false }), 'Tailored documents are ready for your review. Browser filling is paused.');
+});
+
+test('keeps the filling notice when autofill is enabled', () => {
+  assert.equal(preparationReadyMessage({ reviewPolicy: 'final', autoFill: true }), 'Tailored documents prepared. Filling continues before your final review.');
+});
 
 test('maps existing preparation and fill task stages to durable orchestration states', () => {
   assert.equal(applicationOrchestrationState({ type: 'prepare', status: 'running' }), 'preparing_documents');

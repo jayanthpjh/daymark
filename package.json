@@ -9,15 +9,22 @@
     "web:build": "vite build --config web/vite.config.ts && node scripts/build-models.mjs",
     "start:api": "DAYMARK_ROLE=api node scripts/service-runner.mjs",
     "setup-browser": "node scripts/setup-browser.mjs",
-    "test:infra": "node scripts/test-local-infrastructure.mjs",
+    "test:infra": "docker compose --env-file .env.worker -f docker-compose.worker.yml run --rm --no-deps -v \"$PWD/tests:/app/tests:ro\" --entrypoint node daymark-api --test tests/infrastructure-integration.test.mjs",
     "worker:setup": "node scripts/setup-docker-worker.mjs",
     "infra:up": "docker compose --env-file .env.worker -f docker-compose.worker.yml up -d postgres redis",
     "infra:down": "docker compose --env-file .env.worker -f docker-compose.worker.yml stop postgres redis",
     "worker:up": "docker compose --env-file .env.worker -f docker-compose.worker.yml up -d --build",
     "worker:down": "docker compose --env-file .env.worker -f docker-compose.worker.yml down",
+    "docker:up": "docker compose --env-file .env.worker -f docker-compose.worker.yml up -d --build",
+    "docker:down": "docker compose --env-file .env.worker -f docker-compose.worker.yml down",
+    "docker:config": "docker compose --env-file .env.worker -f docker-compose.worker.yml config --quiet",
+    "docker:backup": "node scripts/backup-local-docker.mjs",
+    "mcp:stdio": "docker compose --env-file .env.worker -f docker-compose.worker.yml exec -T daymark-api node mcp/read-stdio.mjs",
+    "test:mcp": "node --test mcp/*.test.mjs tests/agent-read-tools.test.mjs tests/mcp-stdio.test.mjs",
     "web:test": "vitest run"
   },
   "dependencies": {
+    "@modelcontextprotocol/server": "^2.3.1",
     "bullmq": "^5.81.5",
     "docx": "^9.8.1",
     "fastify": "^5.12.5",
@@ -30,7 +37,8 @@
     "pdfjs-dist": "^6.4.299",
     "pdfkit": "^0.20.2",
     "pg": "^8.23.1",
-    "playwright": "^1.63.0"
+    "playwright": "^1.63.0",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@fontsource-variable/inter": "^5.3.0",

@@ -1,8 +1,9 @@
-// Company/board registry. No seed list: boards arrive from discovery (Common Crawl, SearXNG, link harvesting)
-// and are verified once against their ATS API. Stores: in-memory, JSON file, or Postgres (same interface).
+// Company/board registry. Boards arrive from discovery (Common Crawl, SearXNG, link harvesting) or the bootstrap
+// seed catalog (SEED_BOARDS) and are verified against their ATS API. Stores: in-memory, JSON file, or Postgres.
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { boardKey, boardFromKey } from './schema.mjs';
+import { SEED_BOARDS } from './seed-boards.mjs';
 
 export const HOUR = 3_600_000, DAY = 24 * HOUR;
 export const TIERS = Object.freeze({ hot: 2 * HOUR, daily: DAY, weekly: 7 * DAY, parked: 30 * DAY });
@@ -45,8 +46,22 @@ export function afterPoll(record, { ok, jobCount = 0, matchCount = 0, error = ''
 }
 
 export class Registry {
-  constructor(store, { now = Date.now } = {}) { this.store = store; this.now = now; }
-  async init() { await this.store.init?.(); return this; }
+  constructor(store, { now = Date.now, seed = false, seedBoards = SEED_BOARDS } = {}) {
+    this.store = store;
+    this.now = now;
+    this.autoSeed = seed;
+    this.seedBoards = seedBoards;
+  }
+  async init() {
+    await this.store.init?.();
+    if (this.autoSeed) await this.seed(this.seedBoards);
+    return this;
+  }
+  /** Ensure the bootstrap catalog of employer boards is present in the registry. */
+  async seed(boards = this.seedBoards) {
+    if (!Array.isArray(boards) || !boards.length) return [];
+    return this.add(boards, 'seed');
+  }
   get(key) { return this.store.get(key); }
   async all() { return (await this.store.all()).filter(r => !r.key.startsWith('meta:')); }
   async meta(name) { return (await this.store.get(`meta:${name}`)) ?? {}; }
@@ -67,9 +82,19 @@ export class Registry {
   }
   async due({ limit = 500 } = {}) {
     const now = this.now();
-    const rows = (await this.all()).filter(r => r.nextPollAt <= now);
+    const candidates = typeof this.store.due === 'function' ? await this.store.due(now, limit * 4) : await this.all();
+    const rows = candidates.filter(r => !r.key.startsWith('meta:') && r.nextPollAt <= now);
+    return this._interleave(rows, limit);
+  }
+  /** Fallback when a manual collection is triggered and all active boards were polled earlier in the window. */
+  async leastRecentlyPolled({ limit = 80 } = {}) {
+    const rows = (await this.all()).filter(r => r.status !== 'dead' && r.status !== 'parked' && !r.key.startsWith('meta:'));
+    rows.sort((a, b) => (a.lastPolledAt || 0) - (b.lastPolledAt || 0));
+    return this._interleave(rows, limit);
+  }
+  _interleave(rows, limit) {
     const rank = { new: 0, hot: 1, daily: 2, weekly: 3, parked: 4 };
-    rows.sort((a, b) => (a.status === 'new' ? 0 : rank[a.tier]) - (b.status === 'new' ? 0 : rank[b.tier]) || a.nextPollAt - b.nextPollAt);
+    rows.sort((a, b) => (a.status === 'new' ? 0 : rank[a.tier]) - (b.status === 'new' ? 0 : rank[b.tier]) || (a.nextPollAt || 0) - (b.nextPollAt || 0));
     // Take boards in turns across ATS types, so a cap never fills up with whichever ATS was discovered first.
     const byAts = new Map();
     for (const row of rows) { const list = byAts.get(row.ats) || byAts.set(row.ats, []).get(row.ats); list.push(row); }
@@ -124,6 +149,13 @@ export class PostgresStore {
       `INSERT INTO ${this.table} (board_key, ats, tier, status, next_poll_at, record, updated_at) VALUES ($1,$2,$3,$4,to_timestamp($5/1000.0),$6::jsonb,now())
        ON CONFLICT (board_key) DO UPDATE SET tier=EXCLUDED.tier, status=EXCLUDED.status, next_poll_at=EXCLUDED.next_poll_at, record=EXCLUDED.record, updated_at=now()`,
       [r.key, r.ats, r.tier, r.status, r.nextPollAt, JSON.stringify(r)]);
+  }
+  async due(nowMs = Date.now(), limit = 2000) {
+    const { rows } = await this.pool.query(
+      `SELECT record FROM ${this.table} WHERE next_poll_at <= to_timestamp($1/1000.0) AND status != 'meta' ORDER BY next_poll_at ASC LIMIT $2`,
+      [nowMs, limit],
+    );
+    return rows.map(x => x.record);
   }
   async all() { const { rows } = await this.pool.query(`SELECT record FROM ${this.table}`); return rows.map(x => x.record); }
 }

@@ -17,12 +17,16 @@ import { buildTracker, timelineFor } from './tracker-model.mjs';
 import { reconcileJobs, CLOSED_REASON } from './job-sources/freshness.mjs';
 import { checkOpen } from './job-sources/open-check.mjs';
 import { scheduledCollectionDue } from './collection-schedule.mjs';
+import { createCollectionTaskGate } from './collection-task-gate.mjs';
 import { createLogoResolver } from './company-logos.mjs';
 import { removalPlan, removeFromState, expiredJobs, removeExpired } from './application-removal.mjs';
 import { createAgentReadTools } from './agent-read-tools.mjs';
+import { createMcpReadInterface } from './mcp/read-interface.mjs';
+import { createMcpActionInterface } from './mcp/action-interface.mjs';
+import { createMcpHttpHandler, handleNodeMcpRequest } from './mcp/http-handler.mjs';
 import { greenhouseAccountVerified } from './greenhouse-account.mjs';
 import { taskDiagnostics } from './task-diagnostics.mjs';
-import { tailorResume, consistencyWarnings, claimsInResume, interviewPrep, atsKeywordScore } from './tailoring-engine.mjs';
+import { tailorResume, tailoringFallbackReason, consistencyWarnings, claimsInResume, interviewPrep, atsKeywordScore } from './tailoring-engine.mjs';
 import { signInATS, atsLoginScope } from './ats-login.mjs';
 import { approveSubmission, submissionApprovalValid, submissionReviewSnapshot } from './pilot-submission.mjs';
 import {navigateEmployer,employerIdentity,matchesEmployer,applicationRecoveryUrl,isBlankBrowserPage,clearStaleBrowserSingletons} from './browser-recovery.mjs';
@@ -33,27 +37,34 @@ import {acquireWorkerLock} from './worker-lock.mjs';
 import {createDocx,createPdf,documentFilename,resumeUploadPath,resumeFormat} from './resume-export.mjs';
 import {enterWorkdayApplication} from './workday-flow.mjs';
 import {hooksFor} from './ats-hooks.mjs';
-import {historyEntries} from './form-history.mjs';
+import {historyEntries,ensureHistoryBlocks} from './form-history.mjs';
 import {accountScope,authenticateWorkday,findAuthMessage,signInProfileFor} from './ats-auth.mjs';
 import {detectATSAdapter,adapterSnapshot,isGuestAdapter as guestAdapter} from './ats-adapters.mjs';
 import {authPreflightScreen,assertAuthenticatedBeforeApplicationData} from './ats-auth-preflight.mjs';
 import {createAuthMailGateway,requestAuthMail} from './auth-mail-gateway.mjs';
 import {submitApplicationPage,mergeFilledStep,canAutoApprove,hasSubmitControl,submitButtonPattern} from './submit-flow.mjs';
-import {dynamicAdapterFor,enterDynamicApplication,readAdapterCache,updateAdapterCache,adapterTrusted,DYNAMIC_SUBMIT} from './dynamic-adapter.mjs';
+import {dynamicAdapterFor,enterDynamicApplication,hasForm,readAdapterCache,updateAdapterCache,adapterTrusted,DYNAMIC_SUBMIT} from './dynamic-adapter.mjs';
 import {normalizePreferences,planAutoApply} from './apply-rules.mjs';
 import {routeMessage,statusFromMail,markVerificationCheckpoint} from './mail-routing.mjs';
-import {resolveAnswers,aiMessages,acceptAiAnswers,isRequired,neverRemember,isGenericAnswer,eeoPackEntry} from './answer-engine.mjs';
+import {resolveAnswers,profileValues,aiMessages,acceptAiAnswers,isRequired,neverRemember,isGenericAnswer,eeoPackEntry} from './answer-engine.mjs';
 import {classifyQuestion} from './public/questions-model.js';
 import {applicationStatuses,normalizeApplicationStatus} from './public/application-model.js';
 import {lookup} from 'node:dns/promises';
 import {postingMetadata,safeImageUrl} from './job-metadata.mjs';
 import {classifyMail,mailCategories} from './public/mail-model.js';
 import {apifyRunRequest,apifyFailure,newCollectionJobs} from './apify-collection.mjs';
-import {Registry,JsonFileStore,PostgresStore,runCollection,toDaymarkJob,withoutExistingJobs} from './job-sources/index.mjs';
+import {Registry,JsonFileStore,PostgresStore,runCollection,toDaymarkJob,scorePostings,splitRoles,hydrateMissingDescription} from './job-sources/index.mjs';
+import { canonicalUrl, dedupeKey } from './job-sources/schema.mjs';
+import { ROLE_FAMILIES, matchesRoleTargets, roleFamiliesForTitle } from './job-sources/role-families.mjs';
+import {fetchJobDescription as fetchRipplingJobDescription, findRipplingDuplicate, ripplingPostingIdentity} from './job-sources/ats/rippling.mjs';
 import {cleanResumeDocument,documentProfileFields} from './public/resume-document.js';
 import http from 'node:http';
 import { requestLlmJson } from './llm-client.mjs';
+import { requestSecurityError } from './request-security.mjs';
+import { understandForm } from './form-understanding.mjs';
+import { reviewFactualDraft } from './factual-review.mjs';
 import { createSecretStore } from './secret-store.mjs';
+import { protonBridgeHost } from './proton-bridge-config.mjs';
 import { applicationAddress, validMailDomain } from './app-address.mjs';
 import { createAgentServer } from './agent-server.mjs';
 import { createApprovalLedger, ApprovalError } from './agent-approvals.mjs';
@@ -73,7 +84,8 @@ import { simpleParser } from 'mailparser';
 import { extractMailText, extractVerificationCode } from './mail-body.mjs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { launchApplicationBrowser, shouldShowApplicationBrowser } from './application-browser.mjs';
+import { launchApplicationBrowser, shouldShowApplicationBrowser, canReuseApplicationContext } from './application-browser.mjs';
+import { handleCookiePreferences } from './browser-cookie-preferences.mjs';
 import { canApplyCheckpointAnswers } from './task-answers.mjs';
 import { planReviewEdits } from './review-edits.mjs';
 import { parkManualHandoff } from './manual-handoff.mjs';
@@ -84,8 +96,10 @@ import nodemailer from 'nodemailer';
 import { forwardedMessageOptions, forwardingCursor, isApplicationMail, forwardCategories } from './mail-forwarding.mjs';
 import { createPostgresStateStore } from './postgres-state.mjs';
 import { createRedisTaskQueue } from './redis-task-queue.mjs';
+import { nextRunnableTask } from './task-dispatch.mjs';
+import { migrateLegacyCredentialVault, readCredentialVault, writeCredentialVault } from './ats-credential-vault.mjs';
 import { createApplicationFlowGuard, fieldVerification, humanReviewState } from './application-flow.mjs';
-import { syncApplicationOrchestration } from './application-orchestrator.mjs';
+import { preparationReadyMessage, syncApplicationOrchestration } from './application-orchestrator.mjs';
 import { taskWatchdogDecision, workerStallDecision } from './task-watchdog.mjs';
 import { parseRuntimeSettings, runtimeSettings as resolveRuntimeSettings } from './runtime-settings.mjs';
 import { LOCAL_SETTING_KEYS, localSettingsContents } from './settings-env.mjs';
@@ -110,28 +124,39 @@ const authMailSocketPath = path.join(dataDir, 'worker-control', 'a.sock');
 const filesDir = path.join(dataDir, 'files');
 const browserProfileDir = process.env.DAYMARK_BROWSER_PROFILE_DIR || path.join(dataDir, runtimeRole === 'worker' ? 'docker-browser-profile' : 'browser-profile');
 let releaseWorkerLock;
+let workerLeaseLost = false;
 let authMailGateway = null;
 try {
-  releaseWorkerLock=capabilities.ownsTaskQueue ? await acquireWorkerLock(dataDir) : async () => {};
+  releaseWorkerLock=capabilities.ownsTaskQueue ? await acquireWorkerLock(dataDir,{onLost:error=>{
+    workerLeaseLost=true;
+    console.error(JSON.stringify({event:'worker_lease_lost',message:cleanText(error.message,200)}));
+    setImmediate(()=>process.exit(1));
+  }}) : async () => {};
   if(capabilities.ownsBrowserProfile){await fs.mkdir(browserProfileDir,{recursive:true,mode:0o700});await clearStaleBrowserSingletons(browserProfileDir);}
 } catch(error) { console.error(error.message);process.exit(1); }
-const atsVaultReadPath = process.env.DAYMARK_ATS_CREDENTIALS_PATH || path.join(dataDir, 'ats-credentials.json');
-// Container credentials are a read-only runtime secret. The dashboard process
-// remains the only writer to the host-side ATS vault.
-const atsVaultWritePath = path.join(dataDir, 'ats-credentials.json');
+const atsVaultReadPath = process.env.DAYMARK_ATS_CREDENTIALS_PATH || path.join(dataDir, 'secrets', 'ats-credentials.json');
+// Both containers read the same encrypted vault from a read-only secrets mount;
+// the dashboard process remains the only writer.
+const atsVaultWritePath = path.join(dataDir, 'secrets', 'ats-credentials.json');
+const atsVaultKeyPath = process.env.DAYMARK_ATS_CREDENTIALS_KEY_PATH || path.join(dataDir, 'secrets', 'ats-credential-key');
+if (runtimeRole !== 'worker') {
+  const migrated = await migrateLegacyCredentialVault({ legacyPath: path.join(dataDir, 'ats-credentials.json'), credentialsPath: atsVaultWritePath, keyPath: atsVaultKeyPath });
+  if (migrated.migrated) console.info('Migrated saved ATS credentials into the encrypted vault.');
+}
 const execFileAsync = promisify(execFile);
 const port = Number(process.env.PORT || 4173);
 const workerPort = Number(process.env.DAYMARK_WORKER_PORT || 4174);
 let queueTickRunning = false;
 let generationMutex = false;
-let preparationMutex = false;
+let applicationMutex = false;
 let collectionMutex = false;
 const activeTaskIds = new Set();
 const openBrowserContexts = new Set();
 const applicationContexts = new Map();
+const applicationContextVisibility = new Map();
 const browserTasks = new Map();
-const browserLimit = Math.max(1, Math.min(2, Number(process.env.DAYMARK_BROWSER_CONCURRENCY)||2));
-async function closeApplicationContext(task){const key=task.parentTaskId||task.id;const context=applicationContexts.get(key);applicationContexts.delete(key);applicationPages.delete(key);if(context)await context.close().catch(()=>{});}
+const browserLimit = Math.max(1, Math.min(2, Number(process.env.DAYMARK_BROWSER_CONCURRENCY)||1));
+async function closeApplicationContext(task){const key=task.parentTaskId||task.id;const context=applicationContexts.get(key);applicationContexts.delete(key);applicationContextVisibility.delete(key);applicationPages.delete(key);if(context)await context.close().catch(()=>{});}
 let workerBrowserProbePassed = false;
 let browserVisible=false;
 let handoffTaskId=null;
@@ -146,20 +171,25 @@ async function readState() {
   const state = await readStateOrInitialize(
     () => stateStore.read(),
     writeState,
-    () => ({ jobs: [], tasks: [], applications: [], profile: { name: '', email: '', headline: '', resumeName: '', resumeText: '', roleSearch: '', locationSearch: '' }, preferences:{reviewBeforeSubmit:true,aiAnswers:false}, answers: [], lastCollection: null, dailyCollection: { date: new Date().toISOString().slice(0, 10), newCount: 0 } }),
+    () => ({ jobs: [], tasks: [], applications: [], profile: { name: '', email: '', headline: '', resumeName: '', resumeText: '', roleSearch: '', roleFamilies: [], locationSearch: '' }, preferences:{reviewBeforeSubmit:true,aiAnswers:false}, answers: [], lastCollection: null, dailyCollection: { date: new Date().toISOString().slice(0, 10), newCount: 0 } }),
   );
     state.jobs = (state.jobs || []).filter(job => !String(job.id).startsWith('demo-'));
     for(const job of state.jobs)if(!job.salary)job.salary=publishedPayFromDescription(job.description);
     state.tasks ||= [];
     for(const task of state.tasks){const job=state.jobs.find(job=>job.id===task.jobId);if(job&&task.compensation)task.compensation=compensationForJob(job);if(task.type==='prepare'){if(!task.artifacts?.approved)task.reviewPolicy='final';if(task.artifacts&&job)task.manualFillRequired=!resolveAdapter(new URL(job.url).hostname);}}
     state.applications ||= [];
+    state.jobDispositions ||= {};
+    if (!state.jobDispositions || typeof state.jobDispositions !== 'object' || Array.isArray(state.jobDispositions)) state.jobDispositions = {};
+    for (const [jobId, status] of Object.entries(state.jobDispositions)) if (!state.jobs.some(job => job.id === jobId) || !['saved', 'passed'].includes(status)) delete state.jobDispositions[jobId];
     state.answers ||= [];
     state.answerPackSetup ||= false;
     state.answerPack ||= migrateAnswerPack(state.answers);
     state.onboarding ||= { step: 'connections', profileConfirmed: false, completed: false };
     state.connectionChecks ||= {};
     state.preferences={...normalizePreferences(state.preferences),reviewBeforeSubmit:state.preferences?.reviewBeforeSubmit!==false,aiAnswers:state.preferences?.aiAnswers===true};
-    state.profile ||= { name: '', email: '', headline: '', resumeName: '', resumeText: '', roleSearch: '', locationSearch: '' };
+    state.profile ||= { name: '', email: '', headline: '', resumeName: '', resumeText: '', roleSearch: '', roleFamilies: [], locationSearch: '' };
+    if (!Array.isArray(state.profile.roleFamilies)) state.profile.roleFamilies = [];
+    state.profile.roleFamilies = [...new Set(state.profile.roleFamilies.filter(id => ROLE_FAMILIES.some(family => family.id === id)))];
     return state;
 }
 
@@ -192,15 +222,20 @@ async function writeState(state) {
 
 async function readEnv() {
   const values = {};
-  if (runtimeRole !== 'worker') {
-    try {
-      Object.assign(values, Object.fromEntries((await fs.readFile(envPath, 'utf8')).split(/\r?\n/).filter(x => x && !x.startsWith('#') && x.includes('=')).map(line => {
-        const i = line.indexOf('=');
-        return [line.slice(0, i), line.slice(i + 1)];
-      })));
-    } catch {}
-  }
-  for (const key of ['APIFY_API_TOKEN', 'NVIDIA_API_KEY']) if (process.env[key]) values[key] = process.env[key];
+  for (const key of LOCAL_SETTING_KEYS) if (process.env[key]) values[key] = process.env[key];
+  try {
+    const fileEntries = Object.fromEntries((await fs.readFile(envPath, 'utf8')).split(/\r?\n/).filter(x => x && !x.startsWith('#') && x.includes('=')).map(line => {
+      const i = line.indexOf('=');
+      return [line.slice(0, i), line.slice(i + 1)];
+    }));
+    if (runtimeRole === 'worker') {
+      for (const key of ['NVIDIA_API_KEY', 'NVIDIA_MODEL', 'NVIDIA_RPM', 'LLM_HOSTED_ENABLED', 'APIFY_API_TOKEN', 'SEARXNG_URL']) {
+        if (fileEntries[key]) values[key] = fileEntries[key];
+      }
+    } else {
+      Object.assign(values, fileEntries);
+    }
+  } catch {}
   return values;
 }
 
@@ -214,7 +249,7 @@ function perApplicationEmail({ env, job, key, adapter, preferences }) {
   try { return applicationAddress({ domain, company: job?.company, key, secret }); } catch { return ''; }
 }
 async function readAtsCredentials() {
-  try { return JSON.parse(await fs.readFile(atsVaultReadPath, 'utf8')); } catch { return {}; }
+  return readCredentialVault({ credentialsPath: atsVaultReadPath, keyPath: atsVaultKeyPath });
 }
 async function atsCredentialFor(hostname) {
   const credentials = await readAtsCredentials();
@@ -222,9 +257,7 @@ async function atsCredentialFor(hostname) {
   return credentials[host] || credentials.default || null;
 }
 async function writeAtsCredentials(value) {
-  await fs.mkdir(dataDir, { recursive: true, mode: 0o700 });
-  await fs.writeFile(atsVaultWritePath, JSON.stringify(value, null, 2), { mode: 0o600 });
-  await fs.chmod(atsVaultWritePath, 0o600);
+  await writeCredentialVault({ credentialsPath: atsVaultWritePath, keyPath: atsVaultKeyPath }, value);
 }
 
 const atsAccountsPath=path.join(dataDir,'ats-accounts.json');
@@ -258,7 +291,7 @@ async function protonClient() {
 async function readRecentMail({authentication=false,company,since}={}) {
   // Proton Bridge depends on macOS Keychain. The container worker deliberately
   // pauses for a manual verification step instead of receiving Bridge secrets.
-  if (runtimeRole === 'worker') return [];
+  if (runtimeRole === 'worker' || process.env.DAYMARK_DISABLE_MAIL_AUTOMATION === 'true') return [];
   const client = await protonClient();
   try {
     await client.connect();
@@ -293,7 +326,7 @@ async function readRecentMail({authentication=false,company,since}={}) {
 
 let mailForwardingRunning = false;
 async function forwardNewApplicationMail() {
-  if (mailForwardingRunning || runtimeRole === 'worker' || process.env.DAYMARK_DISABLE_MAIL_FORWARDING === 'true') return;
+  if (mailForwardingRunning || runtimeRole === 'worker' || process.env.DAYMARK_DISABLE_MAIL_AUTOMATION === 'true' || process.env.DAYMARK_DISABLE_MAIL_FORWARDING === 'true') return;
   mailForwardingRunning = true;
   let client;
   try {
@@ -407,6 +440,20 @@ function readBody(req, maximum = 25_000_000) {
 }
 
 function cleanText(value, max = 4000) { return String(value ?? '').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').slice(0, max); }
+const backgroundErrorLoggedAt = new Map();
+function logBackgroundError(event, error) {
+  const now = Date.now();
+  if (now - (backgroundErrorLoggedAt.get(event) || 0) < 60_000) return;
+  backgroundErrorLoggedAt.set(event, now);
+  const code = /^[A-Z0-9_]{1,64}$/.test(String(error?.code || '')) ? error.code : undefined;
+  const name = /^[A-Za-z][A-Za-z0-9]{0,39}$/.test(String(error?.name || '')) ? error.name : 'Error';
+  const message = cleanText(error?.message || 'Background operation failed.', 240)
+    .replace(/https?:\/\/\S+/gi, '[url]')
+    .replace(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g, '[email]')
+    .replace(/\b(password|token|secret|api[_-]?key|authorization)\b\s*[:=]\s*[^\s,;]+/gi, '$1=[redacted]')
+    .replace(/\/Users\/[^/\s]+/g, '/Users/[redacted]');
+  console.error(JSON.stringify({ event, name, ...(code ? { code } : {}), message }));
+}
 function slug(value) { return String(value || 'application').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 70) || 'application'; }
 function safeFilename(value) { return path.basename(value).replace(/[^a-zA-Z0-9._-]/g, '_').slice(-100); }
 
@@ -465,9 +512,11 @@ function safeLogoUrl(value){return safeImageUrl(value);}
 function matchScore(job, profile) {
   const roles = String(profile.roleSearch || '').toLowerCase().split(/[\n,;]/).map(x => x.trim()).filter(Boolean);
   const text = `${job.role} ${job.description} ${(job.tags || []).join(' ')}`.toLowerCase();
-  if (!roles.length) return 50;
+  const familyMatch = roleFamiliesForTitle(job.role).some(id => profile.roleFamilies?.includes(id));
+  if (!roles.length && !profile.roleFamilies?.length) return 50;
   const hits = roles.reduce((sum, term) => sum + (text.includes(term) ? 1 : 0), 0);
-  return Math.max(35, Math.min(98, Math.round(50 + hits / roles.length * 48)));
+  const titleFit = roles.length ? Math.max(35, Math.min(98, Math.round(50 + hits / roles.length * 48))) : 35;
+  return Math.max(titleFit, familyMatch ? 82 : 35);
 }
 
 const consistencyWarnings_=(state,claims,company)=>claims.length?consistencyWarnings(state.claimsLedger||[],claims,company).slice(0,10):[];
@@ -492,7 +541,7 @@ function rememberAnswer(state,q,value){
 function queueTaskAnswers(state,task,answers,saveIds=[]){
   task.answerHistory||=[];task.answerHistory.push({checkpointId:task.checkpoint.id,answers,schemas:Object.fromEntries(task.checkpoint.questions.map(q=>[q.id,questionSignature([q])])),at:new Date().toISOString()});
   for(const id of saveIds){const q=task.checkpoint.questions.find(q=>q.id===id);if(q&&id in answers)rememberAnswer(state,q,answers[id]);}
-  task.submissionApproval=null;task.pendingAnswers=answers;task.finalReviewReady=false;task.status='queued';task.reviewState=null;task.reviewReason='';task.stage='Answering questions';task.message='Applying your answers and checking the employer form…';task.updatedAt=new Date().toISOString();pushActivity(task,{status:task.status,message:task.message,progress:task.progress,at:task.updatedAt});
+  task.submissionApproval=null;task.pendingAnswers=answers;task.finalReviewReady=false;task.status='queued';task.queueGeneration=(Number(task.queueGeneration)||0)+1;task.reviewState=null;task.reviewReason='';task.stage='Answering questions';task.message='Applying your answers and checking the employer form…';task.updatedAt=new Date().toISOString();pushActivity(task,{status:task.status,message:task.message,progress:task.progress,at:task.updatedAt});
 }
 // Repeated identical pauses (the same message re-queued many times) collapse into one entry with a count.
 function pushActivity(task,entry){
@@ -507,7 +556,9 @@ async function updateTask(id, update) {
   const task = state.tasks.find(item => item.id === id);
   if (!task) return null;
   if(['completed','paused','cancelled'].includes(task.status))return task;
+  const requeued=update.status==='queued'&&task.status!=='queued';
   Object.assign(task, update, { updatedAt: new Date().toISOString() });
+  if(requeued)task.queueGeneration=(Number(task.queueGeneration)||0)+1;
   if(update.status==='failed')task.stage='Failed';
   if (update.status === 'needs_you') {
     const stage = String(update.stage || task.stage || '').toLowerCase();
@@ -583,8 +634,10 @@ async function collectApify(task) {
   if (!result.ok || !Array.isArray(items)) throw new Error('Could not read the completed Apify dataset.');
   const fresh = await readState();
   if (fresh.dailyCollection?.date !== day) fresh.dailyCollection = { date: day, newCount: 0 };
-  const incoming=newCollectionJobs(items,fresh.jobs,fresh.dailyCollection.newCount,normalizeJob);
-  for(const job of incoming){job.match=matchScore(job,fresh.profile);fresh.jobs.push(job);}
+  const targetsExist = Boolean(fresh.profile.roleSearch?.trim() || fresh.profile.roleFamilies?.length);
+  const matchingItems = targetsExist ? items.filter(item => matchesRoleTargets(item.title || item.job_title || '', fresh.profile.roleSearch, fresh.profile.roleFamilies || [])) : items;
+  const incoming=newCollectionJobs(matchingItems,fresh.jobs,fresh.dailyCollection.newCount,normalizeJob);
+  for(const job of incoming){job.match=matchScore(job,fresh.profile);job.roleFamilies=roleFamiliesForTitle(job.role);if(job.roleFamilies.some(id=>fresh.profile.roleFamilies?.includes(id)))job.matchWhy=[`Role family match: ${ROLE_FAMILIES.filter(family=>job.roleFamilies.includes(family.id)&&fresh.profile.roleFamilies?.includes(family.id)).map(family=>family.label).join(', ')}`];fresh.jobs.push(job);}
   const added=incoming.length;
   fresh.dailyCollection.newCount += added;
   fresh.lastCollection = new Date().toISOString();
@@ -595,6 +648,15 @@ async function collectApify(task) {
 
 // Job sourcing from public ATS boards (job-sources/). Apify above stays an optional, off-by-default source.
 let jobSourcesRegistry=null;
+let lastJobScoreProfileKey = null;
+function jobScoreProfile(profile = {}) {
+  return {
+    profileText: profile.skills || profile.headline || profile.masterResumeText || profile.resumeText || '',
+    roles: splitRoles(profile.roleSearch),
+    roleFamilies: profile.roleFamilies || [],
+  };
+}
+function jobScoreProfileKey(profile) { return JSON.stringify(jobScoreProfile(profile)); }
 async function getJobSourcesRegistry(){
   if(jobSourcesRegistry)return jobSourcesRegistry;
   let store;
@@ -607,26 +669,110 @@ async function collectAts(task) {
   const env = await readEnv();
   const config = Object.fromEntries(jobSourceKeys.map(key => [key, process.env[key] || env[key] || '']).filter(([, value]) => value));
   const state = await readState();
-  if (!String(state.profile?.roleSearch || '').trim()) throw new Error('Add the roles you want in My profile before collecting jobs.');
+  if (!String(state.profile?.roleSearch || '').trim() && !state.profile?.roleFamilies?.length) throw new Error('Add target job titles or review role families in Materials before collecting jobs.');
+  const initialScoreProfileKey = jobScoreProfileKey(state.profile);
   const day = new Date().toISOString().slice(0, 10);
   if (state.dailyCollection?.date !== day) state.dailyCollection = { date: day, newCount: 0 };
   const registry = await getJobSourcesRegistry();
+  if (process.env.DAYMARK_DISABLE_SEED_BOARDS !== '1') await registry.seed();
   const progress = (value, message) => updateTask(task.id, { progress: value, message });
   const prefs = normalizePreferences(state.preferences);
-  const { postings, stats, snapshots } = await runCollection({ registry, profile: state.profile, rules: prefs.skipRules, maxAgeDays: prefs.jobPulling.maxAgeDays, config, commonCrawl: process.env.DAYMARK_COMMON_CRAWL === '1', onProgress: (value, message) => { progress(value, message).catch(() => {}); } });
+  const pendingPostings = new Map();
+  let flushTimer = null, writeChain = Promise.resolve(), streamedNewCount = 0, streamedManualCount = 0, streamError = null;
+  const persistBatch = async postings => {
+    if (!postings.length) return;
+    const fresh = await readState();
+    if (fresh.dailyCollection?.date !== day) fresh.dailyCollection = { date: day, newCount: 0 };
+    const scored = await scorePostings(postings, jobScoreProfile(state.profile));
+    let added = 0, changed = false;
+    for (const item of scored) {
+      const incoming = toDaymarkJob(item);
+      if (!incoming) continue;
+      const key = dedupeKey({ company: incoming.company, title: incoming.role, locations: String(incoming.location || '').split(' · ') });
+      incoming.dedupeKey = key;
+      const incomingUrl = canonicalUrl(incoming.url);
+      const existing = fresh.jobs.find(job => (incomingUrl && canonicalUrl(job.url) === incomingUrl) || (job.dedupeKey || dedupeKey({ company: job.company, title: job.role, locations: String(job.location || '').split(' · ') })) === key);
+      if (!existing) {
+        if (streamedNewCount + added >= 500) continue;
+        fresh.jobs.push(incoming); added++; if (incoming.applyMode === 'manual') streamedManualCount++; changed = true; continue;
+      }
+      const existingIsDirect = Boolean(existing.ats), incomingIsDirect = Boolean(incoming.ats);
+      const shouldUpgrade = (incomingIsDirect && !existingIsDirect) || (incomingIsDirect === existingIsDirect && String(incoming.description || '').length > String(existing.description || '').length);
+      if (shouldUpgrade) {
+        const id = existing.id, firstSeen = existing.first_seen_at || incoming.first_seen_at;
+        Object.assign(existing, incoming, { id, first_seen_at: firstSeen });
+        changed = true;
+      } else if (!existing.logoUrl && incoming.logoUrl) { existing.logoUrl = incoming.logoUrl; changed = true; }
+    }
+    if (added) {
+      fresh.dailyCollection.newCount += added;
+      streamedNewCount += added;
+    }
+    if (changed) await writeState(fresh);
+  };
+  const flushPostings = () => {
+    if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+    const batch = [...pendingPostings.values()]; pendingPostings.clear();
+    if (!batch.length) return writeChain;
+    writeChain = writeChain.then(() => persistBatch(batch));
+    return writeChain;
+  };
+  const enqueuePostings = async postings => {
+    if (streamError) throw streamError;
+    const current = await readState();
+    if (['cancelled', 'paused'].includes(current.tasks.find(item => item.id === task.id)?.status)) return;
+    for (const posting of postings) {
+      const key = posting.applyUrl || posting.dedupeKey || `${posting.company}|${posting.title}`;
+      pendingPostings.set(key, posting);
+    }
+    if (pendingPostings.size >= 12) return flushPostings();
+    if (!flushTimer) flushTimer = setTimeout(() => { flushPostings().catch(error => { streamError = error; }); }, 250);
+  };
+  let collection;
+  try {
+  collection = await runCollection({ registry, profile: state.profile, rules: prefs.skipRules, maxAgeDays: prefs.jobPulling.maxAgeDays, config, scoreResults: false, commonCrawl: process.env.DAYMARK_COMMON_CRAWL === '1', onPostings: enqueuePostings, onProgress: (value, message) => { progress(value, message).catch(() => {}); } });
+  } catch (error) {
+    await flushPostings();
+    throw error;
+  }
+  await flushPostings();
+  await writeChain;
+  if (streamError) throw streamError;
+  const taskState = await readState();
+  if (['cancelled', 'paused'].includes(taskState.tasks.find(item => item.id === task.id)?.status)) return;
+  const { postings, stats, snapshots } = collection;
   const fresh = await readState();
   if (fresh.dailyCollection?.date !== day) fresh.dailyCollection = { date: day, newCount: 0 };
-  const candidates = withoutExistingJobs(postings, fresh.jobs);
-  const incoming = newCollectionJobs(candidates, fresh.jobs, fresh.dailyCollection.newCount, toDaymarkJob);
-  fresh.jobs.push(...incoming);
-  fresh.dailyCollection.newCount += incoming.length;
+  const hydratedIds = new Set();
+  for (const { posting } of postings) {
+    const existing = fresh.jobs.find(item => item.id === `ats-${posting.id}` && item.ats === posting.ats);
+    if (existing && hydrateMissingDescription(existing, posting.description)) hydratedIds.add(existing.id);
+  }
+  // Re-score the full feed only when its scoring inputs changed or this process
+  // has not established a scoring baseline yet. Otherwise only hydrated jobs
+  // need a fresh score; streamed postings were scored as they were persisted.
+  const scoreProfileKey = jobScoreProfileKey(fresh.profile);
+  const needsFullRescore = lastJobScoreProfileKey !== initialScoreProfileKey || initialScoreProfileKey !== scoreProfileKey;
+  const jobsToScore = needsFullRescore ? fresh.jobs : fresh.jobs.filter(job => hydratedIds.has(job.id));
+  if (jobsToScore.length) {
+    const ranked = await scorePostings(jobsToScore.map(job => ({
+      id: job.id, title: job.role, company: job.company,
+      locations: String(job.location || '').split(' · ').filter(Boolean),
+      description: job.description || '', tags: job.tags || [],
+      canFill: job.applyMode === 'auto', ats: job.ats || job.source || '',
+      yearsExperience: job.yearsExperience, sponsorship: job.sponsorship,
+    })), jobScoreProfile(fresh.profile));
+    ranked.forEach(({ posting, score, why }) => {
+      const job = fresh.jobs.find(item => item.id === posting.id);
+      if (job) { job.match = score; job.matchWhy = why; }
+    });
+  }
   fresh.lastAtsCollection = new Date().toISOString();
   // Employer lists that completed tell us which jobs are still open: stamp the ones seen, and close the ones missing twice in a row.
   const freshness = reconcileJobs(fresh.jobs, snapshots, fresh.lastAtsCollection);
   await writeState(fresh);
-  if (incoming.some(job => job.applyMode === 'auto')) setTimeout(() => runAutoApply(), 1000);
-  const manual = incoming.filter(job => job.applyMode === 'manual').length;
-  await updateTask(task.id, { status: 'completed', progress: 100, message: `Added ${incoming.length} new jobs (${manual} manual-apply) from ${stats.polled} employer boards. ${stats.discovered} new boards discovered.${freshness.closed.length ? ` ${freshness.closed.length} job${freshness.closed.length === 1 ? '' : 's'} closed by the employer.` : ''}`, resultsCount: incoming.length });
+  lastJobScoreProfileKey = scoreProfileKey;
+  await updateTask(task.id, { status: 'completed', progress: 100, message: `Added ${streamedNewCount} new jobs (${streamedManualCount} manual-apply) from ${stats.polled} employer boards. ${stats.discovered} new boards discovered.${freshness.closed.length ? ` ${freshness.closed.length} job${freshness.closed.length === 1 ? '' : 's'} closed by the employer.` : ''}`, resultsCount: streamedNewCount });
 }
 
 async function prepareApplication(task) {
@@ -645,12 +791,15 @@ async function prepareApplication(task) {
   const useMaster=task.resumeMode==='default';
   await updateTask(task.id, { status: 'running', progress: 12, message: useMaster?'Preparing your default resume…':'Prioritizing verified experience for this job…', llmCalls: 0 });
   const sourceResume=profile.masterResumeText||masterResume(profile);
-  const tailoringMode=['honest','strong','aggressive'].includes(task.tailoringMode)?task.tailoringMode:'honest';
+  const tailoringMode=task.tailoringMode==='honest'?'honest':'strong';
   let tailored=null;
   if(!useMaster){
     const llm=(messages,maxTokens)=>nvidiaChat(messages,maxTokens,'tailor');
-    try{tailored=await tailorResume({mode:tailoringMode,source:sourceResume,description:job.description,profile,company:job.company,llm});}
-    catch(error){tailored={...await tailorResume({mode:'honest',source:sourceResume,description:job.description,profile}),fellBack:true,fallbackReason:`The model was unavailable (${cleanText(error.message,160)}); kept your original wording.`};}
+    try{tailored=await tailorResume({mode:tailoringMode,source:sourceResume,description:job.description,profile,company:job.company,llm});
+      if (tailored.claims?.length || consistencyWarnings_(state,tailored.claims||[],job.company).length) throw new Error('Unsupported or conflicting claims.');
+      await reviewFactualDraft({source:sourceResume,...tailored,llm});
+    }
+    catch(error){tailored={...await tailorResume({mode:'honest',source:sourceResume,description:job.description,profile}),fellBack:true,fallbackReason:tailoringFallbackReason(error)};}
   }
   const result=useMaster?{resume:sourceResume,coverLetter:'',changes:[],proposedAdditions:[]}:{resume:tailored.resume,coverLetter:tailored.coverLetter||'',changes:tailored.changes,proposedAdditions:[]};
   if (typeof result.resume !== 'string' || typeof result.coverLetter !== 'string') throw new Error('The model did not return both resume and cover letter.');
@@ -679,7 +828,7 @@ async function prepareApplication(task) {
   const taskNow = current.tasks.find(item => item.id === task.id);
   if (taskNow) taskNow.llmCalls = taskNow.llmCalls || 0;
   await writeState(current);
-  const preparedTask=await updateTask(task.id, { status: 'ready_for_review', progress: 100, message: task.reviewPolicy==='final'?'Tailored documents prepared. Filling continues before your final review.':'Resume and cover letter are ready.', artifacts });
+  const preparedTask=await updateTask(task.id, { status: 'ready_for_review', progress: 100, message: preparationReadyMessage(task), artifacts });
   if(['completed','paused','cancelled'].includes(preparedTask?.status))return;
     if(task.autoFill&&task.reviewPolicy==='final'){
     if(resolveAdapter(new URL(job.url).hostname))await createTask('fill',{createdBy:'prepare-complete',jobId:job.id,parentTaskId:task.id,company:job.company,role:job.role,reviewPolicy:'final',stopAtFinalReview:task.stopAtFinalReview===true,watchBrowser:task.watchBrowser===true});
@@ -699,18 +848,35 @@ async function fillStepQuestions(page,step,{task,state,profile,email,job}){
   const sources={};let ai=0;const tried=new Set(),aiTried=new Set(),verifiedById=new Map();
   await updateTask(task.id,{stage:'Answering questions',message:`Reading the employer’s ${step} questions and options…`});
   const optionCache=optionCacheFor(task.id);
+  const parent=state.tasks.find(item=>item.id===task.parentTaskId);
+  const history=historyEntries(parent?.artifacts?.resume,profile?.resumeDocument);
   let checkpoint=await captureQuestions(page,step,{optionCache});
+  if(await ensureHistoryBlocks(page,checkpoint.questions,history))checkpoint=await captureQuestions(page,step,{optionCache});
   const blank=q=>q.value===''||(Array.isArray(q.value)&&!q.value.length);
   const pre=new Set(checkpoint.questions.filter(q=>!blank(q)).map(q=>q.id));
   const aiOn=Boolean(state.preferences?.aiAnswers);
   for(let pass=0;pass<3;pass++){
     const library=(await readState()).applicationAnswerPack||{};
-    const resolved=resolveAnswers(checkpoint.questions,{profile,email,pack:state.answerPack,library,pay:compensationForJob(job),job,history:historyEntries(state.tasks.find(item=>item.id===task.parentTaskId)?.artifacts?.resume)});
+    const resolved=resolveAnswers(checkpoint.questions,{profile,email,pack:state.answerPack,library,pay:compensationForJob(job),job,history});
     const known={};
     for(const entry of task.answerHistory||[]){for(const q of checkpoint.questions){if(!q.manual&&blank(q)&&entry.schemas?.[q.id]===questionSignature([q])&&q.id in entry.answers){const checked=validateAnswers([q],{[q.id]:entry.answers[q.id]});if(!Object.keys(checked.errors).length){known[q.id]=checked.answers[q.id];sources[q.id]='you';}}}}
     for(const [id,value] of Object.entries(resolved.answers))if(!tried.has(id)&&!(id in known)){known[id]=value;sources[id]=resolved.sources[id];}
-    const parent=state.tasks.find(item=>item.id===task.parentTaskId);
-    const targets=checkpoint.questions.filter(q=>resolved.aiCandidates.includes(q.id)&&!(q.id in known)&&!tried.has(q.id)&&!aiTried.has(q.id)&&(isRequired(q)||q.type==='textarea')).slice(0,8);
+    if (pass === 0) {
+      try {
+        const candidates = checkpoint.questions.filter(q => blank(q) && !(q.id in known) && !tried.has(q.id));
+        const mapping = await understandForm(candidates, { llm: aiOn ? messages => nvidiaChat(messages, 1500, 'form') : null });
+        const pVals = profileValues(profile, email);
+        const facts = {
+          name: profile.name || pVals.full, firstName: pVals.first, lastName: pVals.last, preferredName: pVals.preferred,
+          email, phone: profile.phone, linkedin: profile.linkedin, github: pVals.github, website: pVals.website,
+          city: pVals.city, state: pVals.state, postalCode: pVals.postal, country: pVals.country, addressLine1: pVals.address1,
+          currentCompany: pVals.currentCompany, currentTitle: pVals.currentTitle, yearsExperience: pVals.years,
+          desiredSalary: pVals.salary || compensationForJob(job)?.answer || '', noticePeriod: pVals.notice,
+        };
+        for (const [id,field] of Object.entries(mapping)) if (facts[field]) { known[id]=facts[field];sources[id]='profile'; }
+      } catch { /* Unknown fields stay unresolved for review. */ }
+    }
+    const targets=checkpoint.questions.filter(q=>resolved.aiCandidates.includes(q.id)&&!(q.id in known)&&!tried.has(q.id)&&!aiTried.has(q.id)&&(isRequired(q)||q.type==='textarea'||q.options?.length)).slice(0,12);
     if(aiOn&&targets.length&&parent?.artifacts?.resume){
       for(const q of targets)aiTried.add(q.id);
       try{
@@ -756,23 +922,28 @@ async function fillApplication(task) {
   if (!job || !adapter) throw new Error('No supported form adapter matches this posting. You can still use the tailored documents manually.');
   const contextKey=task.parentTaskId||task.id;
   const taskProfileDir=path.join(browserProfileDir,contextKey);
+  const requestedBrowserVisibility=shouldShowApplicationBrowser(task);
   let context = applicationContexts.get(contextKey);
-  try{if(context)context.pages();}catch{context=null;}
+  if(context&&!canReuseApplicationContext(context,requestedBrowserVisibility,applicationContextVisibility.get(contextKey))){
+    applicationContexts.delete(contextKey);applicationContextVisibility.delete(contextKey);applicationPages.delete(contextKey);
+    await context.close().catch(()=>{});context=null;
+  }
   if (!context) {
     try {
       await fs.mkdir(taskProfileDir,{recursive:true,mode:0o700});
       await clearStaleBrowserSingletons(taskProfileDir);
-      context = await launchApplicationBrowser(chromium, taskProfileDir, shouldShowApplicationBrowser(task));
+      context = await launchApplicationBrowser(chromium, taskProfileDir, requestedBrowserVisibility);
     } catch(error) {
       if(/profile.*in use|Opening in existing browser session|ProcessSingleton/i.test(String(error.message)))throw new Error('Daymark’s application browser is already open in another Daymark instance. Close that instance’s application browser, then retry. Your browser profile and saved login are preserved.');
       throw new Error('Daymark’s private browser could not start. Complete the one-time browser setup, restart Daymark, and retry.');
     }
     applicationContexts.set(contextKey,context);
+    applicationContextVisibility.set(contextKey,requestedBrowserVisibility);
   }
   openBrowserContexts.add(context);
   context.on('close', () => {
     openBrowserContexts.delete(context);
-    if (applicationContexts.get(contextKey) === context) applicationContexts.delete(contextKey);
+    if (applicationContexts.get(contextKey) === context) { applicationContexts.delete(contextKey);applicationContextVisibility.delete(contextKey); }
     if (runtimeRole === 'worker') readState().then(async state => {
       let changed = false;
       for (const item of state.tasks) if (item.type === 'fill' && item.parentTaskId === contextKey && item.browserSessionOpen) { item.browserSessionOpen = false; changed = true; }
@@ -810,16 +981,31 @@ async function fillApplication(task) {
     if(!page||page.isClosed()){reopened=true;page=await context.newPage();applicationPages.set(task.parentTaskId,page);await navigateEmployer(page,applicationRecoveryUrl(task,{postingUrl:job.url,embedUrl:embed}),{progress:message=>updateTask(task.id,{stage:'Retrying page',message})});}
     await updateTask(task.id,{browserSessionOpen:true});
     await page.waitForTimeout(1500);
+    const checkCookiePreferences = async () => {
+      const result = await handleCookiePreferences(page);
+      if (result === 'needs_user') {
+        throw Object.assign(new Error('Review the employer’s cookie choices in the Daymark browser, then Continue processing.'), { cookiePreferenceRequired: true });
+      }
+    };
+    await checkCookiePreferences();
     const assertActive = async () => {
       const currentState = await readState();
       const current = currentState.tasks.find(item => item.id === task.id);
       if (!current || ['cancelled', 'paused', 'completed'].includes(current.status)) throw new Error('Browser fill stopped because the task was paused or cancelled.');
     };
     await assertActive();
+    if (!adapter.dynamic && guestAdapter(adapter) && !task.dynamicEntered && !(await hasForm(page))) {
+      const entry = await enterDynamicApplication(page, context, { detect: detectAdapter });
+      if (entry.page !== page) { page = entry.page; applicationPages.set(task.parentTaskId, page); }
+      await checkCookiePreferences();
+      const landed = detectAdapter(new URL(page.url()).hostname); if (landed) adapter = landed;
+      await updateTask(task.id, { dynamicEntered: true, employerIdentity: employerIdentity(job.url, page.url()) });
+    }
     if(adapter.dynamic&&!task.dynamicEntered||reopened&&task.landedHost&&!detectAdapter(new URL(page.url()).hostname)){
       await updateTask(task.id,{stage:'Opening application',progress:12,message:'Finding the application form on this site…'});
       const entry=await enterDynamicApplication(page,context,{detect:detectAdapter});
       if(entry.page!==page){page=entry.page;applicationPages.set(task.parentTaskId,page);}
+      await checkCookiePreferences();
       await updateTask(task.id,{browserSessionOpen:true});
       const landed=detectAdapter(new URL(page.url()).hostname);if(landed)adapter=landed;
       const postingHost=new URL(job.url).hostname;
@@ -837,7 +1023,7 @@ async function fillApplication(task) {
       const scope=accountScope(wdUrl,credentials?.username||'');
       const records=await readAtsAccounts();let account=records[scope]||{};
       const fingerprint=createHash('sha256').update(`${credentials?.username||''}\0${credentials?.password||''}`).digest('hex');
-      if(account.credentialFingerprint!==fingerprint)account={...account,credentialFingerprint:fingerprint,loginAttemptAt:null,recoveryAttemptAt:null,resetAttemptAt:null};
+      if(account.credentialFingerprint!==fingerprint)account={...account,credentialFingerprint:fingerprint,loginAttemptAt:null,recoveryAttemptAt:null,resetAttemptAt:null,...(account.pending?.kind==='reset'?{pending:null,status:'existing'}:{})};
       const progress=message=>updateTask(task.id,{stage:'Signing in',progress:15,finalReviewReady:false,message});
       await enterWorkdayApplication(page,progress,{allowRegistration:true,preferSignIn:account.status==='active'||account.status==='existing'});
       await authenticateWorkday(page,{applicationUrl:wdUrl,company:job.company,credentials,account,allowRegistrationConsent:false,
@@ -858,9 +1044,11 @@ async function fillApplication(task) {
       const scope=atsLoginScope(page.url(),credentials?.username||'');
       let account=(await readAtsAccounts())[scope]||{};
       const fingerprint=createHash('sha256').update(`${credentials?.username||''}\0${credentials?.password||''}`).digest('hex');
-      if(account.credentialFingerprint!==fingerprint)account={credentialFingerprint:fingerprint};
+      if(account.credentialFingerprint!==fingerprint)account={...account,credentialFingerprint:fingerprint,loginAttemptAt:null,codeAttemptAt:null};
       await updateTask(task.id,{stage:'Signing in',progress:15,checkpoint:{id:randomUUID(),step:'ATS authentication',url:page.url(),capturedAt:new Date().toISOString(),questions:[],pauseReason:'authentication'},message:'Signing into the employer ATS with your saved login…'});
-      await signInATS(page,{host:authHost,credentials,account,guest:guestMode,assertActive,profile:signInProfileFor(adapter.id),
+      const nameParts=String(profile.name||'').trim().split(/\s+/);
+      const registrationIdentity={firstName:profile.firstName||nameParts[0]||'',lastName:profile.lastName||nameParts.slice(1).join(' ')};
+      await signInATS(page,{host:authHost,credentials,account,guest:guestMode,assertActive,profile:{...signInProfileFor(adapter.id),...registrationIdentity},
         saveAccount:record=>saveAtsAccount(scope,record),
         findCode:async({since})=>{
           const found=runtimeRole==='worker'
@@ -943,7 +1131,7 @@ async function fillApplication(task) {
       flowStepCount=stepCount+1;
       await assertActive();const step=await applicationStep(page);
       if(await hooksFor(adapter).reviewDetected(page)){flowFinished=true;break;}
-      const answerProfile=materials.rulesVersion==='2026-10-source-only'?{...profile,...materials.sourceProfile,resumeDocument:undefined}:profile;
+      const answerProfile=materials.rulesVersion==='2026-10-source-only'?{...profile,...materials.sourceProfile,resumeDocument:profile.resumeDocument}:profile;
       const stepResult=await fillStepQuestions(page,step,{task,state,profile:answerProfile,email:values.email,job});
       checkpoint=stepResult.checkpoint;aiCount+=stepResult.ai;
       const verifiedFields=mergeVerifiedFields(mergeVerifiedFields(task.verifiedFields,directVerifiedFields),stepResult.verifiedFields);
@@ -1010,7 +1198,7 @@ async function fillApplication(task) {
         const approvedAt=new Date().toISOString();
         Object.assign(parentTask.artifacts,{approved:true,approvedAt,approvedBy:parentTask.artifacts.approvedBy||'auto'});
         approveSubmission(current,parentTask,taskState.jobs.find(j=>j.id===current.jobId),{source:'auto'});
-        Object.assign(current,{status:'queued',reviewState:null,reviewReason:'',submitRequested:true,autoSubmit:true,stage:'Submitting',progress:97,message:'Clean fill on a trusted site. Submitting once automatically.',updatedAt:approvedAt});
+        Object.assign(current,{status:'queued',queueGeneration:(Number(current.queueGeneration)||0)+1,reviewState:null,reviewReason:'',submitRequested:true,autoSubmit:true,stage:'Submitting',progress:97,message:'Clean fill on a trusted site. Submitting once automatically.',updatedAt:approvedAt});
         pushActivity(current,{status:current.status,progress:current.progress,message:current.message,at:approvedAt});
       }
       await writeState(taskState);
@@ -1024,12 +1212,13 @@ async function fillApplication(task) {
       const current = state.tasks.find(item => item.id === task.id);
       if (current && !['cancelled', 'paused', 'completed'].includes(current.status)) {
         const authPause=error?.authStatus;
+        const cookiePause=error?.cookiePreferenceRequired;
         current.status = 'needs_you';
-        current.stage=authPause==='authentication'?'Needs authentication':authPause==='verification'?'Needs verification':authPause==='captcha'?'Needs verification':authPause==='password_reset'?'Needs password reset':authPause==='guest_only'?'Needs manual step':'Needs verification';
+        current.stage=cookiePause?'Cookie preferences':authPause==='authentication'?'Needs authentication':authPause==='verification'?'Needs verification':authPause==='captcha'?'Needs verification':authPause==='password_reset'?'Needs password reset':authPause==='guest_only'?'Needs manual step':'Needs verification';
         current.authStatus=authPause||current.authStatus||'unknown';
         current.adapter=current.adapter||adapterSnapshot(adapter,new URL(job.url).hostname);
-        current.checkpoint={...(current.checkpoint||{}),id:randomUUID(),step:authPause?'ATS authentication':'Browser checkpoint',url:applicationRecoveryUrl({...current,checkpoint:{url:applicationPages.get(task.parentTaskId)?.url()}},{postingUrl:job.url,embedUrl:embed}),capturedAt:new Date().toISOString(),questions:[],pauseReason:authPause==='authentication'?'authentication':authPause==='verification'?'verification':authPause==='captcha'?'captcha':authPause==='password_reset'?'authentication':authPause==='guest_only'?'unsupported':'browser'};
-        current.message = friendlyBrowserError(error.message);
+        current.checkpoint={...(current.checkpoint||{}),id:randomUUID(),step:cookiePause?'Cookie preferences':authPause?'ATS authentication':'Browser checkpoint',url:applicationRecoveryUrl({...current,checkpoint:{url:applicationPages.get(task.parentTaskId)?.url()}},{postingUrl:job.url,embedUrl:embed}),capturedAt:new Date().toISOString(),questions:[],pauseReason:authPause==='authentication'?'authentication':authPause==='verification'?'verification':authPause==='captcha'?'captcha':authPause==='password_reset'?'authentication':authPause==='guest_only'?'unsupported':'browser'};
+        current.message = cookiePause?'Review the employer’s cookie choices in the Daymark browser, then Continue processing.':friendlyBrowserError(error.message);
         current.retryable=/ERR_HTTP2_PROTOCOL_ERROR|ERR_CONNECTION|ERR_TIMED_OUT|ERR_ABORTED|Timeout/i.test(String(error.message));
         current.recoveryReason=current.retryable?'navigation_failed':'browser_intervention';
         current.reviewReason='verification';current.reviewState=humanReviewState('verification');
@@ -1151,7 +1340,7 @@ const requestContext = new AsyncLocalStorage();
 async function createTask(type, values) {
   const state = await readState();
   const { createdBy, createdVia } = taskOrigin(values, requestContext.getStore());
-  const task = { id: randomUUID(), type, ...values, createdBy, createdVia, status: 'queued', progress: 2, message: type === 'collect' ? 'Queued daily job collection' : type === 'fill' ? 'Queued browser form fill' : 'Queued application preparation', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), llmCalls: 0 };
+  const task = { id: randomUUID(), type, ...values, createdBy, createdVia, status: 'queued', queueGeneration: 1, progress: 2, message: type === 'collect' ? 'Queued daily job collection' : type === 'fill' ? 'Queued browser form fill' : 'Queued application preparation', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), llmCalls: 0 };
   syncApplicationOrchestration(task);
   state.tasks.unshift(task);
   await writeState(state);
@@ -1159,7 +1348,21 @@ async function createTask(type, values) {
   return task;
 }
 
-async function queueApplication(job,{source='user',resumeMode,coverLetter,tailoringMode,stopAtFinalReview=true,watchBrowser=false,autoFill=true,createdBy}={}){
+const startCollectionTask = createCollectionTaskGate({ readState, createTask });
+
+const pendingApplicationQueues = new Map();
+function queueApplication(job, options = {}) {
+  const pending = pendingApplicationQueues.get(job.id);
+  if (pending) return pending;
+  let queued;
+  queued = Promise.resolve().then(() => queueApplicationUnlocked(job, options)).finally(() => {
+    if (pendingApplicationQueues.get(job.id) === queued) pendingApplicationQueues.delete(job.id);
+  });
+  pendingApplicationQueues.set(job.id, queued);
+  return queued;
+}
+
+async function queueApplicationUnlocked(job,{source='user',resumeMode,coverLetter,tailoringMode,stopAtFinalReview=true,watchBrowser=false,autoFill=true,createdBy}={}){
   const state=await readState();
   const existing=state.tasks.find(task=>task.type==='prepare'&&task.jobId===job.id&&!['cancelled','failed'].includes(task.status));if(existing)return existing;
   await ensureJobOpen(job);
@@ -1327,11 +1530,25 @@ async function queueSubmit({ taskId, expectedReview, confirmed }) {
   if (!await hasApplicationSession(fill, parent.id)) throw new ActionError('The application browser session has closed. Reopen and refill the application first.', 409);
   approveSubmission(fill, parent, state.jobs.find(j => j.id === fill.jobId));
   Object.assign(fill, { status: 'queued', reviewState: null, reviewReason: '', submitRequested: true, autoSubmit: false, stage: 'Submitting', progress: 97, message: 'Queued for submission after your review.', updatedAt: new Date().toISOString() });
+  fill.queueGeneration=(Number(fill.queueGeneration)||0)+1;
   await writeState(state);
   return { task: safeTask(fill) };
 }
 async function importJobUrl(raw) {
   const url = await validateImportUrl(raw);
+  const ripplingIdentity = ripplingPostingIdentity(url.href);
+  if (ripplingIdentity) {
+    const state = await readState();
+    const duplicate = findRipplingDuplicate(state.jobs, ripplingIdentity);
+    if (duplicate) {
+      if (!String(duplicate.description || '').trim()) {
+        const description = await fetchRipplingJobDescription(ripplingIdentity.board, ripplingIdentity.jobId);
+        if (!description.trim()) throw new Error('Rippling returned no description for this posting. The saved job was left unchanged.');
+        if (hydrateMissingDescription(duplicate, description)) await writeState(state);
+      }
+      return duplicate;
+    }
+  }
   const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(20_000), headers: { 'user-agent': 'DaymarkLocal/0.1 (job-posting import)' } });
   if (!response.ok) throw new Error(`Could not open the posting (${response.status}).`);
   const contentType = response.headers.get('content-type') || '';
@@ -1349,8 +1566,9 @@ async function importJobUrl(raw) {
   const host = url.hostname.replace(/^www\./, '');
   const existing = await readState();
   const job = { id: `manual-${randomUUID()}`, sourceId: '', company: metadata.company||host, role, location: metadata.location||'Review location on posting', posted:metadata.posted, source: 'Manual link', salary:metadata.salary,logoUrl:metadata.logoUrl,companyWebsite:metadata.companyWebsite, tags: [], url: url.href, description: fullDescription, match: 50, first_seen_at: new Date().toISOString(), last_seen_at: new Date().toISOString() };
-  const duplicate=existing.jobs.find(item=>item.url===job.url);if(duplicate){
+  const duplicate=existing.jobs.find(item=>item.url===job.url)||findRipplingDuplicate(existing.jobs,ripplingPostingIdentity(job.url));if(duplicate){
     let changed=false;
+    if(hydrateMissingDescription(duplicate,fullDescription))changed=true;
     if((!duplicate.company||duplicate.company===host)&&metadata.company&&metadata.company!==host){duplicate.company=metadata.company;changed=true;}
     if((!duplicate.location||duplicate.location==='Review location on posting')&&metadata.location){duplicate.location=metadata.location;changed=true;}
     if(!duplicate.salary&&metadata.salary){duplicate.salary=metadata.salary;changed=true;}
@@ -1397,11 +1615,12 @@ const agentActions = createAgentActions({
   importJobUrl: raw => importJobUrl(raw),
   startCollect: async () => {
     const state = await readState();
-    if (!String(state.profile?.roleSearch || '').trim()) throw new Error('Add the roles you want in My profile before collecting jobs.');
+    if (!String(state.profile?.roleSearch || '').trim() && !state.profile?.roleFamilies?.length) throw new Error('Add target job titles or review role families in Materials before collecting jobs.');
     const date = new Date().toISOString().slice(0, 10);
     if (state.dailyCollection?.date === date && state.dailyCollection.newCount >= 100) throw new Error('Your 100 new jobs for today are already collected.');
-    if (state.tasks.some(task => task.type === 'collect' && ['queued', 'running'].includes(task.status))) throw new Error('A job collection is already running.');
-    return safeTask(await createTask('collect', { source: 'ats', createdBy: 'assistant' }));
+    const result = await startCollectionTask({ source: 'ats', createdBy: 'assistant' });
+    if (result.alreadyRunning) throw new Error('A job collection is already running.');
+    return safeTask(result.task);
   },
   queuePrepare: (job, { tailoringMode }) => queueApplication(job, { source: 'user', tailoringMode, autoFill: false, createdBy: 'assistant' }),
   fillTask: ({ taskId }) => startFill(taskId),
@@ -1421,14 +1640,28 @@ const agentServer = createAgentServer({
   executors: { ...createAgentReadTools(readState), ...agentActions.change },
   approvals: { ledger: approvalLedger, actions: agentActions },
 });
+const mcpReadInterface = createMcpReadInterface(createAgentReadTools(readState));
+const mcpInterface = createMcpActionInterface({ readInterface: mcpReadInterface, store: mailboxStore?.backend === 'postgresql' ? mailboxStore : null, actions: agentActions, approvalLedger });
+const mcpPort = port;
+const localMcpHosts = ['127.0.0.1', 'localhost'].map(host => `${host}:${mcpPort}`);
+if (process.env.DAYMARK_MCP_ALLOWED_HOSTS) localMcpHosts.push(...process.env.DAYMARK_MCP_ALLOWED_HOSTS.split(',').map(host => host.trim()).filter(Boolean));
+const localMcpOrigins = ['http://127.0.0.1', 'http://localhost'].map(origin => `${origin}:${mcpPort}`);
+if (process.env.DAYMARK_MCP_ALLOWED_ORIGINS) localMcpOrigins.push(...process.env.DAYMARK_MCP_ALLOWED_ORIGINS.split(',').map(origin => origin.trim()).filter(Boolean));
+const mcpHttp = createMcpHttpHandler({
+  tools: mcpInterface,
+  getToken: async () => process.env.DAYMARK_MCP_TOKEN || (await readEnv()).DAYMARK_MCP_TOKEN || '',
+  allowedHosts: localMcpHosts,
+  allowedOrigins: localMcpOrigins,
+});
 const agentHistory = createAgentHistory({store:mailboxStore,agent:agentServer,contextFor:async jobId=>{
   const state=await readState();const job=jobId?state.jobs.find(item=>item.id===jobId):null;
   if(jobId&&!job)throw new AgentHistoryError('not_found','Application not found. Choose an existing application.',404);
   return {jobsInFeed:state.jobs.length,openApplications:state.tasks.filter(t=>t.type==='fill'&&t.status==='needs_you').length,...(job?{jobId:job.id,company:job.company,role:job.role}:{})};
 }});
-const handleMailbox = mailboxRoutes({ service: mailboxService, readBody, send });
+const mailTransportEnabled = process.env.DAYMARK_DISABLE_MAIL_AUTOMATION !== 'true';
+const handleMailbox = mailboxRoutes({ service: mailboxService, readBody, send, transportEnabled: mailTransportEnabled });
 const handleCalendar = calendarRoutes({ service: calendarService, readBody, send });
-const mailboxPoll = capabilities.ownsTaskQueue || runtimeRole === 'api' ? setInterval(() => { if(mailboxStore && !mailboxDemo) mailboxService.sync().catch(() => {}); }, 60000) : null;
+const mailboxPoll = mailTransportEnabled && (capabilities.ownsTaskQueue || runtimeRole === 'api') ? setInterval(() => { if(mailboxStore && !mailboxDemo) mailboxService.sync().catch(() => {}); }, 60000) : null;
 mailboxPoll?.unref();
 if(mailboxDemo) await mailboxService.sync();
 
@@ -1436,6 +1669,12 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
   requestContext.enterWith({ method: req.method, path: new URL(req.url, 'http://x').pathname.slice(0, 120), origin: String(req.headers.origin || '').slice(0, 80), agent: String(req.headers['user-agent'] || '').slice(0, 80) });
   try {
+    if (url.pathname === '/mcp') {
+      if (!process.env.DAYMARK_MCP_TOKEN && !(await readEnv()).DAYMARK_MCP_TOKEN) return send(res, 404, { error: 'Not found.' });
+      return await handleNodeMcpRequest(req, res, mcpHttp);
+    }
+    const securityError = requestSecurityError(req, runtimeRole === 'worker' ? workerPort : port);
+    if (securityError) return send(res, 403, { error: 'Request rejected.' });
     if (runtimeRole === 'worker') {
       if (req.method === 'GET' && url.pathname === '/_worker/health') {
         const heartbeat = await readWorkerHeartbeat();
@@ -1453,8 +1692,9 @@ const server = http.createServer(async (req, res) => {
       const { resumeText, resumePath, ...safeProfile } = state.profile;
       const status = await setupStatusFor(state,env);
       const heartbeat = runtimeRole === 'api' ? await readWorkerHeartbeat() : null;
-      const { _stateRevision, ...publicState } = state;
-      return send(res, 200, { ...publicState, ...status, worker:publicWorkerStatus({ role:runtimeRole, heartbeat }), agentRuntime:{stateStore:postgresStateStore?'postgresql':'local-json',taskQueue:runtimeRole==='api'?(heartbeat?.taskQueue||(redisUrl?'redis-bullmq':'local-poller')):redisTaskQueue?(Date.now()<redisQueueUnavailableUntil?'redis-degraded':'redis-bullmq'):'local-poller'}, mailForwarding:{enabled:env.APPLICATION_FORWARD_ENABLED==='true'&&process.env.DAYMARK_DISABLE_MAIL_FORWARDING!=='true',recipient:cleanText(env.APPLICATION_FORWARD_TO||'',254),sent:Object.values(state.forwardedMail||{}).filter(item=>item.status==='forwarded').length,failed:Object.values(state.forwardedMail||{}).filter(item=>item.status==='failed').length}, onboarding:{...state.onboarding,completed:Boolean(state.onboarding.completed && status.setup.ready)}, profile: { ...safeProfile, resumeText: resumeText ? '[saved locally]' : '' }, tasks: safeTasks });
+      const { _stateRevision, jobDispositions: _jobDispositions, ...publicState } = state;
+      const safeJobDispositions = Object.fromEntries(Object.entries(state.jobDispositions || {}).filter(([jobId, value]) => state.jobs.some(job => job.id === jobId) && ['saved', 'passed'].includes(value)).map(([jobId, value]) => [jobId, value]));
+      return send(res, 200, { ...publicState, jobDispositions: safeJobDispositions, ...status, worker:publicWorkerStatus({ role:runtimeRole, heartbeat }), agentRuntime:{stateStore:postgresStateStore?'postgresql':'local-json',taskQueue:runtimeRole==='api'?(heartbeat?.taskQueue||(redisUrl?'redis-bullmq':'local-poller')):redisTaskQueue?(Date.now()<redisQueueUnavailableUntil?'redis-degraded':'redis-bullmq'):'local-poller'}, mailForwarding:{enabled:env.APPLICATION_FORWARD_ENABLED==='true'&&process.env.DAYMARK_DISABLE_MAIL_FORWARDING!=='true'&&process.env.DAYMARK_DISABLE_MAIL_AUTOMATION!=='true',paused:process.env.DAYMARK_DISABLE_MAIL_AUTOMATION==='true',recipient:cleanText(env.APPLICATION_FORWARD_TO||'',254),sent:Object.values(state.forwardedMail||{}).filter(item=>item.status==='forwarded').length,failed:Object.values(state.forwardedMail||{}).filter(item=>item.status==='failed').length}, onboarding:{...state.onboarding,completed:Boolean(state.onboarding.completed && status.setup.ready)}, profile: { ...safeProfile, resumeText: resumeText ? '[saved locally]' : '' }, tasks: safeTasks });
     }
     if (req.method === 'GET' && url.pathname === '/api/profile/template') {
       const state=await readState();const text=masterResume(url.searchParams.get('draft')==='1'&&state.resumeDraft?{...state.profile,...state.resumeDraft.fields}:state.profile);
@@ -1487,6 +1727,22 @@ const server = http.createServer(async (req, res) => {
       try{const state=await readState();const preview=cleanupPreview(state);for(const item of preview.protected)await fs.access(state.applications.find(a=>a.jobId===item.jobId).receipt.proof);applyCleanup(state,preview,body.fingerprint);await writeState(state);return send(res,200,{cleanup:state.cleanup,notice:'Records removed; document cleanup is pending.'});}catch(error){return send(res,409,{error:error.message});}
     }
     const checkOpenRoute = url.pathname.match(/^\/api\/jobs\/([^/]+)\/check-open$/);
+    const jobDispositionRoute = url.pathname.match(/^\/api\/jobs\/([^/]+)\/disposition$/);
+    if (req.method === 'PUT' && jobDispositionRoute) {
+      if (!String(req.headers['content-type'] || '').startsWith('application/json') || req.headers['sec-fetch-site'] === 'cross-site' || (req.headers.origin && ![`http://${req.headers.host}`, `https://${req.headers.host}`].includes(req.headers.origin))) return send(res, 403, { error: 'Use Daymark to update job preferences.' });
+      const body = await readBody(req, 2_000);
+      if (!['saved', 'passed', 'active'].includes(body.status)) return send(res, 400, { error: 'Choose saved, passed, or active.' });
+      const state = await readState();const jobId = decodeURIComponent(jobDispositionRoute[1]);
+      if (!state.jobs.some(item => item.id === jobId)) return send(res, 404, { error: 'Job was not found.' });
+      state.jobDispositions ||= {};
+      const next = body.status === 'active' ? undefined : body.status;
+      const previous = state.jobDispositions[jobId];
+      if (previous !== next) {
+        if (next) state.jobDispositions[jobId] = next; else delete state.jobDispositions[jobId];
+        await writeState(state);
+      }
+      return send(res, 200, { jobId, status: next || 'active' });
+    }
     if (req.method === 'POST' && checkOpenRoute) {
       const state = await readState();const job = state.jobs.find(item => item.id === decodeURIComponent(checkOpenRoute[1]));
       if (!job) return send(res, 404, { error: 'Job was not found.' });
@@ -1508,14 +1764,18 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req, 2_000).catch(() => ({}));
       const state = await readState();
       const source = body?.source === 'apify' ? 'apify' : 'ats';
-      if (!String(state.profile?.roleSearch || '').trim()) return send(res, 400, { error: 'Add the roles you want in My profile before collecting jobs.' });
+      if (!String(state.profile?.roleSearch || '').trim() && !state.profile?.roleFamilies?.length) return send(res, 400, { error: 'Add target job titles or review role families in Materials before collecting jobs.' });
       const date = new Date().toISOString().slice(0, 10);
-      if (state.dailyCollection?.date === date && state.dailyCollection.newCount >= 100) return send(res, 429, { error: 'Your 100 new jobs for today are already collected.' });
       if (source === 'apify') {
+        if (state.dailyCollection?.date === date && state.dailyCollection.newCount >= 100) return send(res, 429, { error: 'Your 100 new jobs for today are already collected.' });
         const env = await readEnv();
         if (!env.APIFY_API_TOKEN) return send(res, 400, { error: 'Add your Apify API token in Settings first.' });
         if (state.lastCollection && new Date(state.lastCollection).toISOString().slice(0, 10) === date) return send(res, 429, { error: 'You already ran today’s Apify feed. It refreshes once per day to control cost.' });
-      } else if (state.tasks.some(task => task.type === 'collect' && ['queued', 'running'].includes(task.status))) return send(res, 409, { error: 'A job collection is already running.' });
+      } else {
+        const result = await startCollectionTask({ source });
+        if (result.alreadyRunning) return send(res, 200, { task: safeTask(result.task), alreadyRunning: true });
+        return send(res, 202, { task: result.task });
+      }
       const task = await createTask('collect', { source });
       return send(res, 202, { task });
     }
@@ -1533,6 +1793,7 @@ const server = http.createServer(async (req, res) => {
       const keys = LOCAL_SETTING_KEYS;
       const old = await readEnv();
       for (const key of keys) if (typeof body[key] === 'string' && body[key].trim()) old[key] = body[key].trim().replace(/[\r\n]/g, '');
+      if (old.NVIDIA_API_KEY && body.LLM_HOSTED_ENABLED !== 'false' && !old.LLM_HOSTED_ENABLED) old.LLM_HOSTED_ENABLED = 'true';
       const contents = localSettingsContents(old,keys);
       await fs.writeFile(envPath, contents, { mode: 0o600 });
       await fs.chmod(envPath, 0o600);
@@ -1558,10 +1819,12 @@ const server = http.createServer(async (req, res) => {
       return send(res,200,{saved:true,forwarding:{enabled:body.enabled,recipient}});
     }
     if (req.method === 'POST' && url.pathname === '/api/proton/configure') {
+      if (process.env.DAYMARK_DISABLE_MAIL_AUTOMATION === 'true') return send(res, 503, { saved: false, paused: true, reason: 'Proton Bridge setup is paused until its local connection path is verified.' });
       const body = await readBody(req, 20_000);
       const user = cleanText(body.username, 254);
       const password = String(body.password || '').slice(0, 1000);
-      const host = cleanText(body.host || '127.0.0.1', 120);
+      const bridgeHosts = String(process.env.DAYMARK_BRIDGE_HOSTS || '').split(',').map(item => item.trim()).filter(Boolean);
+      const host = cleanText(protonBridgeHost(body.host || '127.0.0.1', { defaultHost: process.env.PROTON_BRIDGE_HOST || '127.0.0.1', allowedHosts: bridgeHosts }), 120);
       const portValue = Number(body.port || 1143);
       const smtpPortValue=Number(body.smtpPort||1025);
       if (!user.includes('@') || !password || ![...'127.0.0.1,localhost,::1'.split(','),...String(process.env.DAYMARK_BRIDGE_HOSTS||'').split(',').map(item=>item.trim()).filter(Boolean)].includes(host) || !Number.isInteger(portValue) || portValue < 1 || portValue > 65535 || !Number.isInteger(smtpPortValue) || smtpPortValue < 1 || smtpPortValue > 65535) return send(res, 400, { error: 'Enter the local Proton Bridge username, password, and valid IMAP/SMTP ports.' });
@@ -1579,10 +1842,12 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { saved: true });
     }
     if (req.method === 'POST' && url.pathname === '/api/proton/check') {
+      if (process.env.DAYMARK_DISABLE_MAIL_AUTOMATION === 'true') return send(res, 503, { connected: false, paused: true, reason: 'Mail and verification checks are paused until the local Bridge connection is verified.' });
       const messages = await readRecentMail();
       return send(res, 200, { connected: true, mailbox: 'INBOX', recentMessages: messages.length });
     }
     if (req.method === 'GET' && url.pathname === '/api/proton/messages') {
+      if (process.env.DAYMARK_DISABLE_MAIL_AUTOMATION === 'true') return send(res, 200, { messages: [], mailbox: 'INBOX', limit: 20, paused: true, reason: 'Mail and verification checks are paused until the local Bridge connection is verified.' });
       const messages=await readRecentMail();await routeInboxMail(messages);const routedState=await readState();
       for(const message of messages){const delivery=routedState.forwardedMail?.[message.id];message.forwardingStatus=delivery?.status||'';message.forwardingReason=delivery?.reason||'';}
       const visibleMessages=messages.map(({recipients,receivedAt,...message})=>message);
@@ -1612,11 +1877,23 @@ const server = http.createServer(async (req, res) => {
       const vault = await readAtsCredentials();
       return send(res, 200, { credentials: Object.keys(vault).map(host => ({ host, username: vault[host].username, updatedAt: vault[host].updatedAt })) });
     }
+    if (req.method === 'POST' && url.pathname === '/api/profile/role-targets') {
+      const body = await readBody(req, 20_000);
+      const roleSearch = cleanText(body.roleSearch, 1000);
+      const rawFamilies = body.roleFamilies;
+      if (!Array.isArray(rawFamilies) || rawFamilies.length > ROLE_FAMILIES.length || rawFamilies.some(id => typeof id !== 'string' || !ROLE_FAMILIES.some(f => f.id === id))) return send(res, 400, { error: 'Choose valid role families from the list.' });
+      const state = await readState();
+      state.profile.roleSearch = roleSearch;
+      state.profile.roleFamilies = [...new Set(rawFamilies)];
+      await writeState(state);
+      const { resumePath, ...profile } = state.profile;
+      return send(res, 200, { saved: true, profile: { ...profile, resumeText: profile.resumeText ? '[saved locally]' : '' } });
+    }
     if (req.method === 'POST' && url.pathname === '/api/profile') {
       const body = await readBody(req, 500_000);
       const state = await readState();
       const env = await readEnv();
-      state.profile = { ...state.profile, name: cleanText(body.name, 120), email: cleanText(env.APPLICATION_EMAIL || state.profile.email, 254), headline: cleanText(body.headline, 12000), roleSearch: cleanText(body.roleSearch, 1000), locationSearch: cleanText(body.locationSearch, 600), skills: cleanText(body.skills, 12000), workHistory: cleanText(body.workHistory, 60000), education: cleanText(body.education, 6000), linkedin: cleanText(body.linkedin, 300), phone: cleanText(body.phone, 80) };
+      state.profile = { ...state.profile, name: cleanText(body.name, 120), email: cleanText(env.APPLICATION_EMAIL || state.profile.email, 254), headline: cleanText(body.headline, 12000), roleSearch: cleanText(body.roleSearch, 1000), roleFamilies: state.profile.roleFamilies || [], locationSearch: cleanText(body.locationSearch, 600), skills: cleanText(body.skills, 12000), workHistory: cleanText(body.workHistory, 60000), education: cleanText(body.education, 6000), linkedin: cleanText(body.linkedin, 300), phone: cleanText(body.phone, 80) };
       for (const key of ['projects','certifications','resumeEmail','github','website','location']) state.profile[key] = cleanText(body[key], 10000);
       for (const key of ['firstName','middleName','lastName','preferredName','addressLine1','addressLine2','city','state','postalCode','country','yearsExperience','noticePeriod','desiredSalary','referral']) if (key in body) state.profile[key] = cleanText(body[key], 200).trim();
       if(!state.profile.name || !state.profile.roleSearch || !state.profile.resumeText) return send(res,400,{error:'Upload a readable resume and confirm your name and target roles.'});
@@ -1786,7 +2063,7 @@ const server = http.createServer(async (req, res) => {
       const at=new Date().toISOString();
       for(const {fill,parent} of eligible){
         approveSubmission(fill,parent,state.jobs.find(j=>j.id===fill.jobId));
-        Object.assign(fill,{status:'queued',reviewState:null,reviewReason:'',submitRequested:true,autoSubmit:false,stage:'Submitting',progress:97,message:'Queued by Submit all.',updatedAt:at});
+        Object.assign(fill,{status:'queued',queueGeneration:(Number(fill.queueGeneration)||0)+1,reviewState:null,reviewReason:'',submitRequested:true,autoSubmit:false,stage:'Submitting',progress:97,message:'Queued by Submit all.',updatedAt:at});
       }
       await writeState(state);return send(res,202,{queued:eligible.map(item=>item.label),held});
     }
@@ -1923,6 +2200,7 @@ const server = http.createServer(async (req, res) => {
       try{
         const sourceResume=profile.masterResumeText||masterResume(profile);
         const tailored=await tailorResume({mode:'strong',source:sourceResume,description:job.description,profile,company:job.company,llm:(messages,maxTokens)=>nvidiaChat(messages,maxTokens,'tailor')});
+        await reviewFactualDraft({source:sourceResume,...tailored,llm:(messages,maxTokens)=>nvidiaChat(messages,maxTokens,'tailor')});
         return send(res,200,{preview:{mode:tailored.mode,fellBack:tailored.fellBack,note:tailored.fallbackReason||'',resume:tailored.resume,coverLetter:tailored.coverLetter,changes:tailored.changes.slice(0,60).map(item=>({section:cleanText(item.section,120),before:cleanText(item.before,1200),after:cleanText(item.after,1200),kind:item.kind,basedOn:cleanText(item.basedOn||'',1200),reason:cleanText(item.reason||'',400),novel:(item.novel||[]).slice(0,10)})),claims:tailored.claims,prep:tailored.prep,keywordScore:tailored.keywordScore}});
       }catch(error){return send(res,502,{error:cleanText(error.message,300)||'The model could not tailor this resume.'});}
       finally{generationMutex=false;}
@@ -1975,10 +2253,10 @@ const server = http.createServer(async (req, res) => {
       if(manualRecord?.manuallyUpdated&&!['in_progress','filled'].includes(manualRecord.status)){fillMessage='Reviewed document saved. Your manually recorded application status is unchanged.';}else if(current.reviewPolicy==='final'&&reviewFill&&resume===task.artifacts.resume&&!additions.length&&!task.artifacts.attachmentNeedsRefresh&&reviewFill.finalReviewReady){
         // Nothing changed since the draft was attached to the employer form, so no re-upload is needed.
         const fill=fresh.tasks.find(item=>item.id===reviewFill.id);fillTask=fill;
-        if(body.submitAfter===true&&!fill.submitAttemptedAt&&await hasApplicationSession(fill,current.id)){approveSubmission(fill,current,fresh.jobs.find(j=>j.id===fill.jobId));Object.assign(fill,{status:'queued',reviewState:null,reviewReason:'',submitRequested:true,autoSubmit:false,stage:'Submitting',progress:97,message:'Queued for submission after your review.',updatedAt:new Date().toISOString()});fillMessage='Review approved. Submitting your application.';}else fillMessage='Review approved. Submit when ready.';
+        if(body.submitAfter===true&&!fill.submitAttemptedAt&&await hasApplicationSession(fill,current.id)){approveSubmission(fill,current,fresh.jobs.find(j=>j.id===fill.jobId));Object.assign(fill,{status:'queued',queueGeneration:(Number(fill.queueGeneration)||0)+1,reviewState:null,reviewReason:'',submitRequested:true,autoSubmit:false,stage:'Submitting',progress:97,message:'Queued for submission after your review.',updatedAt:new Date().toISOString()});fillMessage='Review approved. Submitting your application.';}else fillMessage='Review approved. Submit when ready.';
         await writeState(fresh);
       }else if(current.reviewPolicy==='final'&&reviewFill){
-        const fill=fresh.tasks.find(item=>item.id===reviewFill.id);fill.status='queued';fill.reviewState=null;fill.reviewReason='';fill.refreshResumeOnly=true;fill.submissionApproval=null;fill.submitAfterRefresh=false;fill.finalReviewReady=false;fill.progress=96;fill.message='Updating the application attachment with your approved resume…';fill.updatedAt=new Date().toISOString();await writeState(fresh);fillTask=fill;fillMessage=fill.submitAfterRefresh?'Review approved. Attaching your resume, then submitting.':'Final review saved. Updating the attached resume before submission.';
+        const fill=fresh.tasks.find(item=>item.id===reviewFill.id);fill.status='queued';fill.queueGeneration=(Number(fill.queueGeneration)||0)+1;fill.reviewState=null;fill.reviewReason='';fill.refreshResumeOnly=true;fill.submissionApproval=null;fill.submitAfterRefresh=false;fill.finalReviewReady=false;fill.progress=96;fill.message='Updating the application attachment with your approved resume…';fill.updatedAt=new Date().toISOString();await writeState(fresh);fillTask=fill;fillMessage=fill.submitAfterRefresh?'Review approved. Attaching your resume, then submitting.':'Final review saved. Updating the attached resume before submission.';
       }else if(current.autoFill){const job=fresh.jobs.find(job=>job.id===current.jobId);const active=fresh.tasks.find(item=>item.type==='fill'&&item.parentTaskId===current.id&&!['cancelled','failed'].includes(item.status));if(active)fillTask=active;else if(job&&resolveAdapter(new URL(job.url).hostname))fillTask=await createTask('fill',{jobId:job.id,parentTaskId:current.id,company:job.company,role:job.role,stopAtFinalReview:current.stopAtFinalReview===true});else fillMessage='Resume approved. This site needs a supported adapter before automatic filling; use the prepared documents from the application details.';}
       return send(res,200,{task:safeTask(current),fillTask:fillTask?safeTask(fillTask):undefined,fillMessage});
     }
@@ -2128,7 +2406,7 @@ const server = http.createServer(async (req, res) => {
         task.finalReviewReady=false;task.submitRequested=false;task.refreshResumeOnly=false;
         // Resolve this step / Continue is a deliberate user action: re-reading the same step is expected, so clear cycle visits but keep the step budget.
         task.flowGuard={steps:Number(task.flowGuard?.steps)||0,visits:[]};
-        handoffTaskId=resume?null:task.id;task.visibleBrowserApproved=!resume&&body.showBrowser===true;task.watchBrowser=watch;task.manualHandoff=!resume&&!watch;task.status='queued';task.reviewState=null;task.reviewReason='';task.stage=resume?'Filling information':'Opening application';
+        handoffTaskId=resume?null:task.id;task.visibleBrowserApproved=!resume&&body.showBrowser===true;task.watchBrowser=watch;task.manualHandoff=!resume&&!watch;task.status='queued';task.queueGeneration=(Number(task.queueGeneration)||0)+1;task.reviewState=null;task.reviewReason='';task.stage=resume?'Filling information':'Opening application';
         task.message=watch?'Opening the visible application browser so you can watch automatic processing…':resume?'Signing back in and checking the application after your changes…':'Opening the application in Chrome and signing in with your saved login…';
         task.updatedAt=new Date().toISOString();pushActivity(task,{status:task.status,message:task.message,progress:task.progress,at:task.updatedAt});await writeState(state);return send(res,200,{task:safeTask(task)});
       }catch{handoffTaskId=null;return send(res,500,{error:'The application session could not reopen. Its saved profile is preserved; retry manual resolution.'});}finally{generationMutex=false;}
@@ -2197,7 +2475,7 @@ const server = http.createServer(async (req, res) => {
       if (action === 'pause') Object.assign(task, { status: 'paused', message: 'Paused by you.' });
       const application=state.applications.find(item=>item.jobId===task.jobId);
       if(action==='resume'&&(task.submittedAt||application?.submittedAt||['submitted','screening','interview','offer'].includes(application?.status)))return send(res,409,{error:'This application already has submission evidence or a recorded outcome. It will not be submitted again.'});
-      if (action === 'resume') Object.assign(task, { status: 'queued', reviewState: null, reviewReason: '', progress: 2, message: 'Added back to the preparation queue.' });
+      if (action === 'resume') Object.assign(task, { status: 'queued', queueGeneration: (Number(task.queueGeneration)||0)+1, reviewState: null, reviewReason: '', progress: 2, message: 'Added back to the preparation queue.' });
       task.updatedAt = new Date().toISOString();
       await writeState(state);
       return send(res, 200, { task: safeTask(task) });
@@ -2244,6 +2522,8 @@ if (capabilities.ownsApi) {
 const listenPort = runtimeRole === 'worker' ? workerPort : port;
 server.listen(listenPort, listenHost(runtimeRole), async () => {
   if (capabilities.ownsTaskQueue) {
+    try { await releaseWorkerLock.assertOwned?.(); }
+    catch (error) { logBackgroundError('worker_lease_verification_failed', error); process.exit(1); return; }
     const state = await readState();
     if(Number(state.automaticSubmissionVersion||0)<2){state.preferences.reviewBeforeSubmit=true;state.automaticSubmissionVersion=2;}
     for(const task of state.tasks){if(task.type==='fill'&&!task.checkpoint&&task.formSnapshot?.url){task.checkpoint={id:randomUUID(),step:'Saved application checkpoint',url:task.formSnapshot.url,capturedAt:task.formSnapshot.capturedAt||task.updatedAt,questions:[],pauseReason:'browser'};task.stage=task.finalReviewReady?'Final review':'Needs verification';if(!task.finalReviewReady)task.message='A saved employer checkpoint is available. Continue processing to check its current questions, or Resolve this step to inspect the saved session.';}}
@@ -2254,7 +2534,7 @@ server.listen(listenPort, listenHost(runtimeRole), async () => {
     for(const task of state.tasks)if(task.type==='fill'&&task.manualHandoff){task.manualHandoff=false;if(task.status==='needs_you')task.message=task.submitAttemptedAt?'Awaiting employer confirmation. Daymark will not send this application again.':'The application session was closed when Daymark restarted. Continue in the background from your saved checkpoint.';}
     for (const task of state.tasks) {
       if (task.browserSessionOpen) task.browserSessionOpen = false;
-      if (task.status === 'running') Object.assign(task, { status: 'queued', message: 'Resumed after the local worker restarted.' });
+      if (task.status === 'running') Object.assign(task, { status: 'queued', queueGeneration:(Number(task.queueGeneration)||0)+1, message: 'Resumed after the local worker restarted.' });
     }
     await writeState(state);
   }
@@ -2276,7 +2556,9 @@ server.listen(listenPort, listenHost(runtimeRole), async () => {
     }
   }
   if (runtimeRole === 'api') {
-    authMailGateway = await createAuthMailGateway({ socketPath: authMailSocketPath, findMail: async request => {
+    // Docker Desktop cannot share a host-mounted Unix socket reliably. Keep the
+    // gateway closed until mail access is re-enabled through a supported relay.
+    if (process.env.DAYMARK_DISABLE_MAIL_AUTOMATION !== 'true') authMailGateway = await createAuthMailGateway({ socketPath: authMailSocketPath, findMail: async request => {
       const state = await readState();
       const security = request.purpose === 'security';
       const task = state.tasks.find(item => item.id === request.taskId && item.type === 'fill' && item.status === 'running' && (security || /sign|auth|verification/i.test(item.stage || '')));
@@ -2296,25 +2578,26 @@ server.listen(listenPort, listenHost(runtimeRole), async () => {
   console.log(runtimeRole === 'worker' ? `Daymark application worker listening privately on ${listenPort}` : `Daymark running at http://127.0.0.1:${listenPort}`);
 });
 
-async function processQueuedTask(taskId) {
-  if (!capabilities.ownsTaskQueue) return { skipped: true };
+async function processQueuedTask(taskId, generation = 0) {
+  if (!capabilities.ownsTaskQueue || workerLeaseLost) return { skipped: true };
+  await releaseWorkerLock.assertOwned?.();
   const state = await readState();
-  const task = state.tasks.find(item => item.id === taskId && item.status === 'queued');
+  const task = state.tasks.find(item => item.id === taskId && item.status === 'queued' && (Number(item.queueGeneration)||0) === generation);
   if (!task) return { skipped: true };
-  if (activeTaskIds.has(task.id)) return { skipped: true };
-  const lane = task.type === 'fill' ? 'browser' : task.type === 'prepare' ? 'preparation' : 'collection';
-  if ((lane === 'browser' && (generationMutex || browserTasks.size >= browserLimit)) || (lane === 'preparation' && preparationMutex) || (lane === 'collection' && collectionMutex)) return { skipped: true };
+  if (activeTaskIds.size >= 2) return { skipped: true };
+  const lane = task.type === 'collect' ? 'collection' : 'application';
+  if ((lane === 'application' && applicationMutex) || (lane === 'collection' && collectionMutex) || (task.type === 'fill' && (generationMutex || browserTasks.size >= browserLimit))) return { skipped: true };
   const persistedHandoff=state.tasks.find(item=>(item.manualHandoff||item.watchBrowser)&&['queued','running'].includes(item.status))?.id;
   const holding=handoffTaskId&&state.tasks.some(item=>item.id===handoffTaskId&&['queued','running'].includes(item.status))?handoffTaskId:persistedHandoff||null;
-  if (lane === 'browser' && holding && task.id !== holding) return { skipped: true };
+  if (task.type === 'fill' && holding && task.id !== holding) return { skipped: true };
 
-  if(lane==='browser'){const host=new URL(state.jobs.find(j=>j.id===task.jobId)?.url||'https://invalid.local').hostname;const employer=task.company;for(const otherId of browserTasks.keys()){const other=state.tasks.find(t=>t.id===otherId);if(other?.company===employer)return {skipped:true};}}
+  if(task.type==='fill'){const employer=task.company;for(const otherId of browserTasks.keys()){const other=state.tasks.find(t=>t.id===otherId);if(other?.company===employer)return {skipped:true};}}
   activeTaskIds.add(task.id);
-  if (lane === 'browser') browserTasks.set(task.id,{since:Date.now(),lastProgressAt:Date.now()});
-  else if (lane === 'preparation') preparationMutex = true;
+  if (lane === 'application') applicationMutex = true;
   else collectionMutex = true;
+  if (task.type === 'fill') browserTasks.set(task.id,{since:Date.now(),lastProgressAt:Date.now()});
   const runStarted=Date.now();
-  if (lane === 'browser') { activeTaskId=task.id; activeTaskSince=runStarted; activeTaskLastProgressAt=runStarted; }
+  if (task.type === 'fill') { activeTaskId=task.id; activeTaskSince=runStarted; activeTaskLastProgressAt=runStarted; }
   const shouldShowBrowser = shouldShowApplicationBrowser(task);
   try {
     if (task.type === 'fill') browserVisible = shouldShowBrowser;
@@ -2326,8 +2609,8 @@ async function processQueuedTask(taskId) {
     }
   } finally {
     activeTaskIds.delete(task.id);
-    if (lane === 'browser') { browserTasks.delete(task.id);activeTaskId=[...browserTasks.keys()][0]||'';activeTaskSince=browserTasks.get(activeTaskId)?.since||0;activeTaskLastProgressAt=browserTasks.get(activeTaskId)?.lastProgressAt||0; }
-    else if (lane === 'preparation') preparationMutex = false;
+    if (task.type === 'fill') { browserTasks.delete(task.id);activeTaskId=[...browserTasks.keys()][0]||'';activeTaskSince=browserTasks.get(activeTaskId)?.since||0;activeTaskLastProgressAt=browserTasks.get(activeTaskId)?.lastProgressAt||0; }
+    if (lane === 'application') applicationMutex = false;
     else collectionMutex = false;
     if(task.type==='fill'){
       const timed=await readState();const current=timed.tasks.find(item=>item.id===task.id);
@@ -2343,22 +2626,22 @@ const redisTaskQueue = capabilities.ownsTaskQueue && redisUrl
   : null;
 
 const workerInterval = setInterval(async () => {
-  if (!capabilities.ownsTaskQueue) return;
-  if (queueTickRunning) return;
+  if (!capabilities.ownsTaskQueue || workerLeaseLost) return;
+  if (queueTickRunning || activeTaskIds.size >= 2) return;
   queueTickRunning = true;
   try {
     const state = await readState();
     // A manual or watched session only holds the queue while it is actively being worked; once it waits for you, other applications continue.
     const persistedHandoff=state.tasks.find(item=>(item.manualHandoff||item.watchBrowser)&&['queued','running'].includes(item.status))?.id;
     const holding=handoffTaskId&&state.tasks.some(item=>item.id===handoffTaskId&&['queued','running'].includes(item.status))?handoffTaskId:persistedHandoff||null;
-    const task = state.tasks.find(item => item.status === 'queued'
-      && (item.type !== 'fill' || !holding || item.id === holding)
-      && (item.type === 'fill' ? !generationMutex && browserTasks.size < browserLimit : item.type === 'prepare' ? !preparationMutex : !collectionMutex));
+    const candidates=state.tasks.filter(item=>item.type!=='fill'||!holding||item.id===holding);
+    const task=nextRunnableTask(candidates,{activeTasks:activeTaskIds.size,applicationActive:applicationMutex,collectionActive:collectionMutex,maxActive:2});
     if (task) {
+      const generation=Number(task.queueGeneration)||0;
       if(redisTaskQueue&&Date.now()>=redisQueueUnavailableUntil){
-        try{await redisTaskQueue.enqueue(task.id);}
-        catch{redisQueueUnavailableUntil=Date.now()+10_000;console.error('Daymark Redis task queue is unavailable; continuing with local worker lanes.');void processQueuedTask(task.id).catch(error=>console.error('Daymark local task failed:',cleanText(error.message,200)));}
-      }else void processQueuedTask(task.id).catch(error=>console.error('Daymark local task failed:',cleanText(error.message,200)));
+        try{await redisTaskQueue.enqueue(task.id,generation);}
+        catch{redisQueueUnavailableUntil=Date.now()+10_000;console.error('Daymark Redis task queue is unavailable; continuing with local worker lanes.');void processQueuedTask(task.id,generation).catch(error=>console.error('Daymark local task failed:',cleanText(error.message,200)));}
+      }else void processQueuedTask(task.id,generation).catch(error=>console.error('Daymark local task failed:',cleanText(error.message,200)));
     }
   } catch (error) {
     console.error('Background worker error:', cleanText(error.message, 300));
@@ -2370,11 +2653,11 @@ const heartbeatInterval = runtimeRole === 'worker' ? setInterval(() => {
   if (stalled) {
     console.error('Daymark worker watchdog detected stalled task progress; restarting from the saved checkpoint.');
     const id=stalled[0];
-    readState().then(async state=>{const task=state.tasks.find(t=>t.id===id);if(task){await updateTask(id,{status:'needs_you',stage:task.submitAttemptedAt?'Submission unconfirmed':'Needs verification',message:'This application stopped making progress. Its checkpoint is preserved; other applications continue.'});await closeApplicationContext(task);}}).catch(()=>{});
+    readState().then(async state=>{const task=state.tasks.find(t=>t.id===id);if(task){await updateTask(id,{status:'needs_you',stage:task.submitAttemptedAt?'Submission unconfirmed':'Needs verification',message:'This application stopped making progress. Its checkpoint is preserved; other applications continue.'});await closeApplicationContext(task);}}).catch(error=>logBackgroundError('worker_stall_recovery_failed',error));
     browserTasks.delete(id);
     return;
   }
-  writeWorkerHeartbeat(workerBrowserProbePassed).catch(() => {});
+  writeWorkerHeartbeat(workerBrowserProbePassed).catch(error=>logBackgroundError('worker_heartbeat_write_failed',error));
 }, 3_000) : null;
 
 const watchdogInterval = runtimeRole === 'api' ? setInterval(async () => {
@@ -2389,13 +2672,13 @@ const watchdogInterval = runtimeRole === 'api' ? setInterval(async () => {
       changed=true;
     }
     if(changed)await writeState(state);
-  } catch {}
+  } catch (error) { logBackgroundError('task_watchdog_failed',error); }
 },5_000) : null;
 
 // Optional adaptive polling of the discovered ATS boards: DAYMARK_ATS_POLL_MINUTES=120 queues a collection every 2 h.
 // Scheduled collection. Checked every minute; a collection starts when the saved interval has passed since the last one
 // (default 60 minutes, set in Settings, 0 = off). DAYMARK_ATS_POLL_MINUTES overrides the setting. Never submits anything.
-if(runtimeRole!=='worker')setInterval(async()=>{try{const state=await readState();if(scheduledCollectionDue(state))await createTask('collect',{createdBy:'scheduled-poll',source:'ats',scheduled:true});}catch{}},60_000).unref();
+if(runtimeRole!=='worker')setInterval(async()=>{try{await startCollectionTask({createdBy:'scheduled-poll',source:'ats',scheduled:true},scheduledCollectionDue);}catch(error){logBackgroundError('scheduled_collection_check_failed',error);}},60_000).unref();
 
 let shuttingDown=false;
 const shutdown = async () => {

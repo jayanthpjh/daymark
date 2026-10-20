@@ -13,3 +13,13 @@ export function launchApplicationBrowser(chromium, profilePath, visible) {
 export function shouldShowApplicationBrowser(task) {
   return task?.visibleBrowserApproved === true && (task.watchBrowser === true || task.manualHandoff === true);
 }
+
+export function canReuseApplicationContext(context, visible, contextVisible) {
+  if (!context || contextVisible !== visible) return false;
+  try {
+    context.pages();
+    return true;
+  } catch {
+    return false;
+  }
+}

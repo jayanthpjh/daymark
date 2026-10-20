@@ -1,5 +1,5 @@
 // Authentication is deterministic. Mail content and credentials never enter model prompts.
-class AuthPause extends Error {}
+class AuthPause extends Error { constructor(message, authStatus = 'authentication') { super(message); this.authStatus = authStatus; } }
 export function accountScope(raw,email){
  const url=new URL(raw);if(url.protocol!=='https:'||!/^[-a-z0-9]+\.wd\d+\.myworkdayjobs\.com$/i.test(url.hostname))throw new AuthPause('Unsupported Workday account host.');
  const parts=url.pathname.split('/').filter(Boolean);const site=/^[a-z]{2}-[a-z]{2}$/i.test(parts[0]||'')?parts[1]:parts[0];
@@ -86,18 +86,16 @@ async function runWorkdayAuthentication(page,{applicationUrl,company,credentials
   const body=await page.locator('body').innerText();
   return (body.match(/(?:an? account.{0,80}already exists|email.{0,50}already.{0,30}(?:registered|exists)|wrong email address.{0,100}|password.{0,80}(?:does not meet|cannot be|must not|previous password)|cannot reuse.{0,50}password|verification.{0,40}(?:expired|invalid))/i)||[])[0]||'';
  };
- let recovering=false;
  for(let step=0;step<14;step++){
   await check();const screen=await workdayAuthScreen(page);
   if(screen==='application'){await persist({status:'active',verifiedAt:new Date(now()).toISOString(),pending:null,loginAttemptAt:null});await progress('Employer account access confirmed. Continuing application filling…');return;}
-  if(screen==='forgot'||screen==='reset'||account.pending?.kind==='reset')throw new AuthPause('Employer password recovery needs your review. Resolve this step in the employer session, then continue in Daymark.');
-  if(screen==='captcha')throw new AuthPause('Complete the CAPTCHA in Chrome, then Continue processing. Your account progress is saved.');
+  if(screen==='forgot'||screen==='reset'||account.pending?.kind==='reset')throw new AuthPause('Complete password recovery in the employer browser, update the saved ATS password in Settings, then Continue processing. Daymark will not request or submit a password reset.','password_reset');
+  if(screen==='captcha')throw new AuthPause('Complete the CAPTCHA in Chrome, then Continue processing. Your account progress is saved.','captcha');
   if(screen==='register'){
    if(account.status==='active'||account.pending?.kind==='reset') {await button('Sign In').click();await settle(screen);continue;}
    if(account.pending?.kind==='register'){
     await progress('Checking for the employer verification email…');
     // Never repeat account creation after an uncertain response.
-    recovering=false;
     const message=await findMessage('verify',account.pending.since,account.usedMailIds||[]);
     if(message?.link){await check();await page.goto(message.link,{waitUntil:'domcontentloaded',timeout:30000});await persist({usedMailIds:[...(account.usedMailIds||[]),message.id].slice(-20)});await settle(screen);continue;}
     // The earlier registration response is uncertain. Do not submit Create Account again;
@@ -143,27 +141,19 @@ async function runWorkdayAuthentication(page,{applicationUrl,company,credentials
    await persist({loginAttemptAt:now()});await button('Sign In').click();await settle(screen);
    const error=await errors();const body=await page.locator('body').innerText();
    if(/wrong email|incorrect|invalid (?:email|password)|account.*locked/i.test(error+' '+body)){
-    if(account.pending?.kind==='register')throw new AuthPause('The saved default password was not accepted. Complete password recovery in Chrome, then Continue processing; Daymark will not change it automatically.');
-    if(account.pending?.kind==='reset'||recovering)throw new AuthPause('Sign-in still failed after recovery. Review the employer error in Chrome; no further retries will run automatically.');
-    const forgot=button(/^(?:Forgot Password|Forgot your password\?)$/i);if(!await visible(forgot))throw new AuthPause('Sign-in failed. Open the employer password recovery flow in Chrome, then Continue processing.');
-    await forgot.click();await settle(screen);recovering=true;continue;
+    throw new AuthPause('The saved employer password was not accepted. Complete password recovery in the employer browser, update the saved ATS password in Settings, then Continue processing. Daymark will not request or submit a password reset.');
    }
    if(await workdayAuthScreen(page)==='login')throw new AuthPause('Workday has not confirmed sign-in. Complete any employer check in Chrome, then Continue processing.');
    continue;
   }
-  if(screen==='forgot'&&account.pending?.kind!=='reset'){
-   if(account.recoveryAttemptAt)throw new AuthPause('Password recovery has already been attempted with this saved password. Complete it in Chrome or update this employer password in Settings before retrying.');
-   await progress('Requesting employer password recovery…');await fillEmail();
-   let submit=button('Reset Password');if(!await visible(submit))submit=button('Submit');if(!await visible(submit))throw new AuthPause('The password recovery action was not recognized. Complete this step in Chrome.');
-   await check();await persist({pending:{kind:'reset',since:now()-2000},status:'recovering',recoveryAttemptAt:now()});await submit.click();await settle(screen);continue;
-  }
-  if(screen==='mail'||screen==='code'||(screen==='unknown'&&account.pending)||(['login','forgot'].includes(screen)&&account.pending?.kind==='reset')){
+  if(screen==='mail'||screen==='code'||(screen==='unknown'&&account.pending)){
    if(!account.pending&&(screen==='mail'||screen==='code')){
     // Account creation may have been completed by the user in the same browser.
     await persist({status:'pending',pending:{kind:'register',since:now()-15*60000,source:'browser_verification_checkpoint'}});
    }
    const pending=account.pending;if(!pending)throw new AuthPause('Complete employer verification in Chrome, then Continue processing.');
-   await progress(`Waiting for the employer ${pending.kind==='reset'?'password recovery':'verification'} email…`);
+   if(pending.kind!=='register')throw new AuthPause('Complete employer verification in Chrome, then Continue processing.');
+   await progress('Waiting for the employer verification email…');
    let mail;
    for(let poll=0;poll<3;poll++){await check();mail=await findMessage('verify',pending.since,account.usedMailIds||[]);if(mail||now()-started>120000)break;await wait(5000);}
    if(!mail&&pending.kind==='register'&&['mail','code','unknown'].includes(screen)){
@@ -189,16 +179,6 @@ async function runWorkdayAuthentication(page,{applicationUrl,company,credentials
    if(await errors())throw new AuthPause('The employer rejected or expired the verification step. Review it in Chrome, then Continue processing.');
    await persist({usedMailIds:[...(account.usedMailIds||[]),mail.id].slice(-20)});continue;
   }
-  if(screen==='reset'){
-   if(account.pending?.kind!=='reset')throw new AuthPause('Password reset is not associated with this application request. Complete it in Chrome.');
-   if(account.resetAttemptAt)throw new AuthPause('A password reset was already attempted. Complete it in Chrome, or update the employer password in Settings before retrying.');
-   const passwords=page.locator('input[type="password"]');if(await passwords.count()!==2)throw new AuthPause('Unrecognized password reset form. Complete it in Chrome.');
-   await progress('Completing the requested employer password recovery…');await passwords.nth(0).fill(credentials.password);await passwords.nth(1).fill(credentials.password);
-   const reset=button('Reset Password');if(!await visible(reset))throw new AuthPause('Password reset details filled. Complete the employer reset action in Chrome.');
-   await check();await persist({resetAttemptAt:now()});await reset.click();await settle(screen);
-   if(await errors())throw new AuthPause('Workday rejected the password reset. It may prohibit reusing the previous password. Choose an accepted password in Chrome and update this employer override in Settings.');
-   await persist({pending:null,status:'existing',loginAttemptAt:null});continue;
-  }
   if(screen==='unknown-auth')throw new AuthPause('This employer authentication step is not recognized. Complete it in Chrome, then Continue processing.');
   if(now()-started>120000)break;
   await wait(1000);
@@ -206,14 +186,15 @@ async function runWorkdayAuthentication(page,{applicationUrl,company,credentials
  throw new AuthPause('Employer authentication is still pending. Check Chrome, then Continue processing.');
 }
 
-// Sign-in shapes for ATSs that use the bounded generic sign-in in ats-login.mjs. Registration, password reset and consent
-// stay with the applicant; these only describe how the existing-account sign-in screen looks.
+// Sign-in shapes for ATSs that use the bounded generic flow in ats-login.mjs.
+// Registration is attempted only on a clearly labeled form with recognized fields;
+// consent, extra required fields, password resets and challenges stay with the applicant.
 //   entry           link or button on the posting that opens the sign-in screen
 //   identifierFirst the email/username is asked on its own screen before the password
 //   next / submit   accessible names of the two buttons
 export const SIGN_IN_PROFILES=Object.freeze({
- icims:Object.freeze({entry:/^(log in|sign in|login)$/i,identifierFirst:true,next:/^(next|continue)$/i,submit:/^(log in|sign in|login|submit|continue)$/i,username:'input[name*="loginName" i]:visible,input[id*="loginName" i]:visible'}),
- avature:Object.freeze({entry:/^(sign in|log in|login)$/i,identifierFirst:false,next:/^(next|continue)$/i,submit:/^(sign in|log in|login)$/i,username:'input[name*="login" i]:visible,input[name*="username" i]:visible'}),
- successfactors:Object.freeze({entry:/^(sign in|log in|login)$/i,identifierFirst:false,next:/^(next|continue)$/i,submit:/^(sign in|log in|login)$/i,username:'input[name="j_username"]:visible,input[id="username"]:visible,input[name*="username" i]:visible'}),
+ icims:Object.freeze({entry:/^(log in|sign in|login)$/i,identifierFirst:true,next:/^(next|continue)$/i,submit:/^(log in|sign in|login|submit|continue)$/i,username:'input[name*="loginName" i]:visible,input[id*="loginName" i]:visible',registration:true}),
+ avature:Object.freeze({entry:/^(sign in|log in|login)$/i,identifierFirst:false,next:/^(next|continue)$/i,submit:/^(sign in|log in|login)$/i,username:'input[name*="login" i]:visible,input[name*="username" i]:visible',registration:true}),
+ successfactors:Object.freeze({entry:/^(sign in|log in|login)$/i,identifierFirst:false,next:/^(next|continue)$/i,submit:/^(sign in|log in|login)$/i,username:'input[name="j_username"]:visible,input[id="username"]:visible,input[name*="username" i]:visible',registration:true}),
 });
 export const signInProfileFor=adapterId=>Object.hasOwn(SIGN_IN_PROFILES,adapterId)?SIGN_IN_PROFILES[adapterId]:null;
