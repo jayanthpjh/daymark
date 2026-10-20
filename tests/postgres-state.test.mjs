@@ -38,6 +38,26 @@ class PoolMock {
   async end() {}
 }
 
+class DelayedSnapshotPool extends PoolMock {
+  delayNextSnapshotRead() {
+    let start, release;
+    const started = new Promise(resolve => { start = resolve; });
+    const held = new Promise(resolve => { release = resolve; });
+    this.snapshotReadGate = async () => { start(); await held; };
+    return { started, release };
+  }
+  async query(sql, values = []) {
+    if (sql.includes('SELECT state_json, revision FROM daymark_state') && !sql.includes('FOR UPDATE') && this.snapshotReadGate) {
+      const gate = this.snapshotReadGate;
+      this.snapshotReadGate = null;
+      const row = this.state ? { ...this.state, state_json: structuredClone(this.state.state_json) } : null;
+      await gate();
+      return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
+    }
+    return super.query(sql, values);
+  }
+}
+
 const initial = () => ({ jobs: [], tasks: [], applications: [], profile: { name: 'Jayanth' } });
 
 test('persists the existing state contract and mirrors private task checkpoints transactionally', async () => {
@@ -82,6 +102,36 @@ test('merges concurrent API and worker snapshots without discarding unrelated ta
   const latest = await store.read();
   assert.equal(latest.tasks.find(task => task.id === 'fill-a').status, 'running');
   assert.equal(latest.tasks.find(task => task.id === 'fill-b').status, 'needs_you');
+  await store.close();
+});
+
+test('retries an older in-flight snapshot after a local write advances the revision', async () => {
+  const pool = new DelayedSnapshotPool();
+  const store = await createPostgresStateStore({ pool });
+  await store.write(initial());
+  const writerSnapshot = await store.read();
+  const delayed = pool.delayNextSnapshotRead();
+  const staleRead = store.read();
+  await delayed.started;
+
+  writerSnapshot.profile.name = 'Updated';
+  await store.write(writerSnapshot);
+  delayed.release();
+
+  const current = await staleRead;
+  assert.equal(current.profile.name, 'Updated');
+  assert.equal(current._stateRevision, 2);
+  await store.close();
+});
+
+test('keeps failing closed when the database revision is genuinely lower', async () => {
+  const pool = new PoolMock();
+  const store = await createPostgresStateStore({ pool });
+  await store.write(initial());
+  await store.read();
+  pool.state.revision = 0;
+
+  await assert.rejects(store.read(), /revision moved backwards/i);
   await store.close();
 });
 

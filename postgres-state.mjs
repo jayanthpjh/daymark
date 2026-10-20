@@ -114,16 +114,26 @@ export async function createPostgresStateStore({ connectionString, legacyFile = 
   let localWrites = Promise.resolve();
 
   async function read() {
-    const result = await pool.query('SELECT state_json, revision FROM daymark_state WHERE state_id = $1', [singleton]);
-    if (!result.rowCount) throw Object.assign(new Error('Daymark PostgreSQL state has not been initialized.'), { code: 'ENOENT' });
-    const value = assertState(result.rows[0].state_json);
-    const revision = Number(result.rows[0].revision);
-    if (!Number.isSafeInteger(revision) || revision < 0 || (lastKnownRevision > 0 && revision < lastKnownRevision)) throw new Error('Daymark PostgreSQL state revision moved backwards. The saved record was left untouched.');
-    value._stateRevision = revision;
-    lastKnownRevision = Math.max(lastKnownRevision, revision);
-    snapshots.set(value, clone(value));
-    snapshotRevisions.set(value, revision);
-    return value;
+    // A SELECT can start before a local write commits and return afterward. If
+    // that write advanced lastKnownRevision, retry the older MVCC snapshot
+    // before treating it as an actual database rollback.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const result = await pool.query('SELECT state_json, revision FROM daymark_state WHERE state_id = $1', [singleton]);
+      if (!result.rowCount) throw Object.assign(new Error('Daymark PostgreSQL state has not been initialized.'), { code: 'ENOENT' });
+      const value = assertState(result.rows[0].state_json);
+      const revision = Number(result.rows[0].revision);
+      if (!Number.isSafeInteger(revision) || revision < 0) throw new Error('Daymark PostgreSQL state revision moved backwards. The saved record was left untouched.');
+      if (lastKnownRevision > 0 && revision < lastKnownRevision) {
+        if (attempt < 2) continue;
+        throw new Error('Daymark PostgreSQL state revision moved backwards. The saved record was left untouched.');
+      }
+      value._stateRevision = revision;
+      lastKnownRevision = Math.max(lastKnownRevision, revision);
+      snapshots.set(value, clone(value));
+      snapshotRevisions.set(value, revision);
+      return value;
+    }
+    throw new Error('Daymark could not read a consistent PostgreSQL state snapshot. The saved record was left untouched.');
   }
 
   function write(value) {

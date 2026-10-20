@@ -20,3 +20,4 @@
 - Preserve saved job/application history when enriching incomplete ATS listings, and avoid duplicate collection tasks.
 - Reuse collection scores when profile inputs are unchanged instead of repeatedly ranking the full feed.
 - Surface sanitized watchdog and scheduled-collection failures, and stop worker activity when its lease is lost.
+- Retry stale in-flight PostgreSQL snapshots so concurrent state writes do not falsely fail Discover collections.
