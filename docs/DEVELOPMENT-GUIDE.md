@@ -83,10 +83,10 @@ Latest result (2026-10-16): 409 unit tests, 406 passed, 0 failed, 3 skipped. API
 - UI: `web/src/components/AgentPanel.tsx`.
 
 ### Job sourcing
-- `job-sources/`: ATS board APIs (Greenhouse, Lever, Ashby, SmartRecruiters, Workable, Workday, Recruitee), aggregators, board discovery (Common Crawl, SearXNG, link harvesting), company registry, adaptive polling. Entry point `job-sources/collect.mjs`. Apify stays an optional source.
+- `job-sources/`: public ATS listing readers (28 ATS URL families), employer-board discovery (SearXNG, optional Common Crawl, and ATS-link harvesting), and nine aggregators. Jobicy is limited to hourly refreshes and Himalayas to daily refreshes, with source attribution preserved in the feed. Credential-gated sources remain inactive until configured. Entry point `job-sources/collect.mjs`; Apify stays optional and may incur charges.
 
 ### LLM
-- `llm-client.mjs`: routes JSON calls by task between hosted NVIDIA and a local OpenAI-compatible model (`LLM_BASE_URL`, `LLM_MODEL`), with fallback both ways. Sensitive questions never reach a model.
+- `llm-client.mjs`: routes writing tasks only to the explicitly enabled NVIDIA-compatible hosted provider, with shared pacing and bounded retries. Form-profile mapping reuses deterministic local question rules; sensitive questions never reach a model.
 
 ### OCI (built, never deployed)
 - `docker-compose.oci.yml`, `docker/Dockerfile.api`, `docker/Dockerfile.bridge`, `docker/bridge-entrypoint.sh`, `docker/llm-entrypoint.sh`, `scripts/setup-oci.mjs`, `oci-env.mjs`, `scripts/oci/{cloud-init.yaml,deploy.sh,backup.sh}`, `docs/oci-deploy.md`, `secret-store.mjs`.
@@ -144,17 +144,9 @@ On 2026-10-16 at 01:19, prepare and fill tasks for two jobs appeared with no kno
 - Done when: a restart with auto-apply off creates zero tasks, proven by a test.
 
 ### 7.1 OCI deployment and the self-hosted model
-Goal: everything runs 24/7 on one Always Free Ampere A1 VM, reached only over Tailscale, with a local model for light tasks.
-1. Upgrade the OCI account to Pay-As-You-Go and set a $1 budget alert.
-2. Create `VM.Standard.A1.Flex` (4 OCPU, 24 GB, Ubuntu 24.04), no public inbound ports, using `scripts/oci/cloud-init.yaml` and a one-time Tailscale key.
-3. Attach a 150 GB block volume at `/srv/daymark`.
-4. Clone, run `node scripts/setup-oci.mjs`, then `docker compose --env-file .env.oci -f docker-compose.oci.yml up -d --build`.
-5. Pin the Proton Bridge release tag in `docker/Dockerfile.bridge`; sign in once with `docker compose ... run --rm proton-bridge init` (`login`, then `info`).
-6. Pull `qwen3:8b`, `qwen3:4b`, `nomic-embed-text`; measure tokens per second and record them in `docs/oci-deploy.md`.
-7. Restore the database and copy `data/` (not browser profiles). Sign in to employer sites again through noVNC on port 6080.
-8. Install the nightly encrypted backup and run a restore drill.
-- Done when: every public port is closed; health returns 200 over Tailscale; Bridge reads the inbox; the router returns valid JSON from Ollama and falls back to NVIDIA when the `llm` container is stopped; a reboot brings everything back.
-- Prerequisites to confirm with the applicant: the application mailbox must be a separate paid Proton account (Bridge needs a paid plan).
+The earlier steps in this section are obsolete. Follow [`docs/hybrid-llm.md`](hybrid-llm.md), which keeps Proton Bridge on the Mac and uses deterministic local rules for safe form-profile mapping after the local model benchmark failed its latency and output-quality gates.
+
+OCI verification on 2026-10-17 found a Free Trial tenancy in US East (Ashburn), a 200 GB Always Free volume quota with 0 used, and an A1 shape marked Always Free-eligible. Oracle's current Always Free documentation sets the post-trial A1 ceiling at 2 OCPU / 12 GB. Do not upgrade to Pay-As-You-Go or follow the old 4/24 GB target. Provisioning waits for the memory budget and remaining acceptance gates in the hybrid runbook.
 
 ### 7.2 Job sourcing live
 Set `SEARXNG_URL=http://searxng:8080`; run one Common Crawl discovery pass and a scheduled collection; check de-duplication, ATS tagging and per-host rate limits. Done when a run returns postings from Greenhouse, Lever and Ashby and quiet boards are polled less often.

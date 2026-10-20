@@ -1,48 +1,48 @@
-# Daymark Local Docker Worker Plan
+# Daymark local Docker setup
 
-## Goal
+## Runtime layout
 
-Run Daymark's application automation in an isolated Docker worker on the user's Apple Silicon Mac. The dashboard remains local, credentials and documents stay on the Mac, and Playwright uses Chromium inside the container rather than launching the installed macOS Chrome. This removes the GCP VM charge, but the Mac and Docker Desktop must remain awake and running.
+- The API and dashboard, PostgreSQL, Redis, Playwright worker, and MCP run in Docker on one Mac.
+- Proton Mail Bridge stays in the native Mac app. The current Compose setup pauses inbox sync, forwarding, OTP retrieval and outbound sends. Docker Desktop does not support the mounted host Unix socket used by the old local setup, and a Bridge listener bound to Mac loopback may not accept the host-gateway connection.
+- The API and browser viewer publish ports only on `127.0.0.1`. PostgreSQL, Redis, and the worker API have no host-published ports.
+- PostgreSQL and Redis use named volumes. Documents, application files, credentials, and browser profiles live under the ignored `data/` directory, mounted at the same absolute path in API and worker containers.
+- The worker concurrency is one. Daymark retains its approval ledger, explicit final-submit approval, CAPTCHA/consent checkpoints, and no-retry behavior for uncertain submissions.
+- There is no GCP or OCI runtime and no model server. NVIDIA is an external API only and remains gated for real application data.
 
-## Current architecture to account for
+## Setup and daily use
 
-Daymark currently starts its API and background worker together in `server.mjs`. The worker launches a persistent Playwright context and keeps application pages alive for review and recovery. This means containerizing the browser alone is insufficient: the worker/browser lifecycle and its persistent profile must have a clear owner, and the dashboard must continue to receive task state and recovery actions.
+1. Install Docker Desktop. For an existing Docker-backed installation, run `npm run docker:backup` while `daymark-postgres` is running, before setup changes `.env`. The backup contains a private data archive, `.env`, and a PostgreSQL dump.
+2. Run `npm run worker:setup` once. It writes owner-only `.env` and `.env.worker` files, preserves existing application settings, creates the PostgreSQL password and MCP bearer token, and prepares private data directories.
+3. Review `.env.worker`; it contains the worker's NVIDIA and Apify keys, but NVIDIA calls remain disabled by a separate production-approval gate generated as false.
+4. Run `npm run worker:up`, then open `http://127.0.0.1:4173`. Docker restarts services unless they were explicitly stopped. `npm run docker:down` stops the stack without deleting volumes.
+5. Configure a local MCP client with `npm run mcp:stdio` and the repository as its working directory. Its process runs inside the API container; the API must be running. HTTP MCP is authenticated and available only at `http://127.0.0.1:4173/mcp`.
 
-## Target architecture
+The generated documents and browser profiles keep their original host paths, so saved application references remain valid after the API moves into Docker. On first PostgreSQL startup, Daymark imports `data/state.json` only when the database does not already contain Daymark state. Do not delete the named volumes or switch a populated setup to a new blank database.
 
-- **Mac dashboard/API:** Continue serving the UI at `127.0.0.1:4173` and own local configuration/state where practical.
-- **Docker worker:** Run the application queue and Playwright Chromium in a dedicated Linux container on a private Docker network. Initially allow one active application at a time.
-- **Worker interface:** Use a narrow authenticated local API or queue contract for start, status, checkpoint, resume, and manual handoff. Do not expose the worker port beyond the Mac.
-- **Persistent local data:** Keep Daymark state, generated documents, task checkpoints, and the worker's Playwright profile in named Docker volumes or explicitly scoped local data directories. Never mount the user's general home directory or ordinary Chrome profile.
-- **Secrets:** Inject NVIDIA and ATS secrets at runtime using a local-only secret mechanism; never bake them into the image or emit them in logs/state. Keep Proton Bridge on the Mac if its access depends on macOS Keychain, and define a narrowly scoped local handoff if the worker needs mailbox access.
+## Proton Bridge boundary
 
-## Implementation sequence
+The API uses the file secret backend in a private host-mounted `data/secrets/` directory. It never depends on macOS Keychain from inside Linux. The Bridge host allowlist includes only Docker Desktop's `host.docker.internal` gateway. The previous Unix-socket handoff fails on Docker Desktop's host mounts (`ENOTSUP`), so the Compose profile now disables mailbox synchronization, OTP lookup, forwarding and SMTP sends; the API does not create that socket while mail is disabled. Local drafts and previously stored mail remain available. Do not enter Bridge credentials or open Bridge ports to the LAN or internet. Mail can be re-enabled only after a restricted relay is implemented and verified; until then, OTP and sign-in steps require manual handling.
 
-1. **Inventory runtime boundaries.** Identify state files, generated-resume paths, upload/download paths, queue ownership, and current browser launch/handoff behavior. Decide which process owns each persistent resource.
-2. **Separate execution from presentation.** Extract the application worker behind a stable local interface while preserving the current API, task identifiers, checkpoint schema, and UI polling behavior. Ensure only one worker can own the queue and browser profile.
-3. **Add a pinned ARM64 container.** Build for `linux/arm64` on Apple Silicon. Pin the Playwright image to the exact package version and run as a non-root user with only required browser permissions. Keep Chromium headless for background work; support an explicit inspection handoff through a container viewer or controlled local display if the user needs to watch a run.
-4. **Persist and protect state.** Add named volumes for worker profile and application data. Restrict file permissions, exclude secrets and runtime data from image layers and source control, and document encrypted backup/restore for important local state.
-5. **Integrate Compose lifecycle.** Provide a simple start/stop/restart flow, health checks, graceful shutdown, bounded logs, and a visible worker status in Daymark. Browser closure or Docker restart must leave a recoverable checkpoint rather than false completion.
-6. **Validate with safe fixtures.** Test queue exclusivity, ARM64 browser startup, task pause/resume, persistent profile after restart, application-specific file access, secret redaction, and UI status synchronization before testing a real employer form. Keep CAPTCHA, inaccessible verification, unknown legal attestations, and missing factual answers as explicit user checkpoints.
+## Backup and restore
 
-## Local resource budget
+`npm run docker:backup` creates `data/backups/pre-docker-<timestamp>/` with `data.tar.gz`, `.env`, and `postgres.dump`; the directory and files are owner-only. Keep the backup on encrypted local storage.
 
-- Configure Docker Desktop with approximately **4 GB RAM** available to the worker during initial testing; tune against measured use.
-- Run a single application at a time until memory use and recovery behavior are stable.
-- Cloud VM spend: **$0** for this local setup. Existing NVIDIA/API charges and local electricity/storage remain.
-- The Mac must be awake, online, and running Docker Desktop. Sleeping or shutting down pauses the worker; it cannot provide Tsenta-style 24/7 cloud execution.
+For recovery, stop Daymark, restore the `.env` file, extract `data.tar.gz` into `data/`, run `npm run worker:setup` to regenerate `.env.worker`, and start the Compose PostgreSQL service with an empty volume. Then restore the database snapshot with:
+
+```sh
+docker compose --env-file .env.worker -f docker-compose.worker.yml exec -T postgres pg_restore -U daymark -d daymark --clean --if-exists < data/backups/pre-docker-TIMESTAMP/postgres.dump
+```
+
+The database dump contains application state, documents' references, transactional checkpoint history, and approval history. The data archive contains document files and browser profiles. Verify `/api/health`, application and approval counts, a generated document, and a saved browser checkpoint before resuming tasks.
 
 ## Acceptance checks
 
-- The worker starts on Apple Silicon without opening the installed macOS Chrome or colliding with its profile.
-- One application can run, pause at a critical checkpoint, resume, and preserve its checkpoint and local profile through a controlled container restart.
-- Daymark UI continues to show actual task state and recovery links while the worker runs separately.
-- Credentials, resume contents, private profile data, and tokens do not appear in the image, logs, frontend state, or source control.
-- Proton Bridge behavior is explicitly verified; do not assume a Linux container can access macOS Keychain.
-- Starting a second worker or duplicate task cannot concurrently use the same profile or submit twice.
-
-## Coordination with current Daymark work
-
-Treat this as a deployment/runtime track alongside the current resume, application-flow, and UI work. Preserve current API contracts and task/checkpoint compatibility; integrate after active application-flow repairs have stable tests. The worker split should not introduce new application behavior or bypass existing user checkpoints. Validate first with isolated employer fixtures, then with a live application without submitting unless separately authorized.
-
-The shared work sequence, existing endpoint/checkpoint contracts, current process boundaries, Proton Bridge boundary, and handoff scope are tracked in [implementation-tracks.md](implementation-tracks.md). The current implementation still couples the queue, API, persistent Playwright context, and page map in `server.mjs`; this plan must account for that lifecycle instead of containerizing Chromium alone. Keep the existing `data/state.json`, task identifiers, checkpoint/question identifiers, and safe no-duplicate-submit recovery behavior compatible during the split.
+- `npm run docker:config` validates the merged local Compose settings without revealing values.
+- `npm run worker:up` builds and starts the API, PostgreSQL, Redis, and worker with healthy dependencies and restart policies.
+- `127.0.0.1:4173` and `127.0.0.1:6080` are the only published ports. Database, Redis, and worker API are reachable only on the Compose network.
+- A synthetic ATS fixture checks one-at-a-time execution, profile persistence, sign-in/CAPTCHA/consent checkpoints, form validation, and stop-before-submit.
+- MCP tests verify loopback HTTP authorization, stdio startup, bounded reads/actions, idempotency, and the inability to approve or submit.
+- NVIDIA remains unreachable for real resume/application data unless both hosted writing and the separate production-approval flag are explicitly enabled after account-term and budget review.
+- Mail sync, OTP lookup, forwarding and outbound sends fail closed while `DAYMARK_DISABLE_MAIL_AUTOMATION` is true; local draft operations remain available.
+- Proton remains paused until a restricted relay handles Bridge access without a host-mounted Unix socket and passes connection, OTP scoping and no-send regression tests.
+- Backups restore the state, documents, browser profile, checkpoints, and approval history before the old local API is retired.

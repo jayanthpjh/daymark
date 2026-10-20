@@ -1,0 +1,29 @@
+- [x] Inspect repository and attached migration plan
+- [x] Provider routing and isolation tests
+- [x] Queues, shared request pacing and retry tests
+- [x] Factual writing gates and regression tests
+- [x] Single application processing
+- [x] OCI compose and Mac gateway configuration
+- [x] Candidate benchmark tooling and synthetic fixtures
+- [x] Full unit and MCP regression passed (3 environment-dependent skips)
+- [x] Same-origin/local-host mutation guard tests; cross-site and DNS-rebinding requests fail closed
+- [x] NVIDIA hosted calls require both explicit switches; saved keys alone do not enable real-data calls
+- [x] HTML discovery requires a reviewed exact-host allowlist and reachable permissive robots.txt; redirects fail closed
+- [x] Location-specific SearXNG queries retain reserved budget; unused NVIDIA embeddings removed
+- [ ] Run a simulated ATS workflow through final receipt (deferred: no current live Docker worker)
+- [x] Verify OCI account category, home region and root-compartment inventory
+- [ ] Confirm tenancy-specific A1 and storage entitlement before provisioning
+- [ ] Live model benchmark, Mac gateway and ATS review validation (deferred: verify provider terms/account and Mac relay first)
+- [ ] Backup restore, migration and reliability soak (deferred before any production migration)
+
+- [x] Add later MCP phase with Tsenta-like discovery, preparation, review and tracking
+- [x] Set client scope: all compatible MCP clients, local stdio and remote Streamable HTTP
+- [x] Complete MCP scope review in the local-only release plan; remote/client roll-out remains staged
+- [x] Implement bounded read tool contract with tracker pagination and privacy tests
+- [x] Add local MCP stdio transport and protocol/privacy integration test
+- [x] Add authenticated Streamable HTTP transport (static bearer token; OAuth client support remains open)
+- [x] Add idempotent job-link and preparation adapters
+- [x] Add fill request tool through Daymark approval ledger; no MCP approval or submit tool
+- [x] Test MCP retries, privacy scopes, authorization and approval boundary
+- [ ] Simulated ATS receipt and approval replay integration (deferred)
+- [ ] Package both transports and verify the supported-client compatibility matrix (deferred; local stdio and authenticated local HTTP only)

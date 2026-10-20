@@ -1,5 +1,7 @@
 # Daymark: Plan, Requirements and Architecture (Review Draft)
 
+> Historical architecture review: this review predates the hybrid LLM rollout and OCI limit verification. Its 4 OCPU / 24 GB Always Free target, Pay-As-You-Go recommendation, and cloud Proton Bridge instructions are obsolete. Use [hybrid-llm.md](hybrid-llm.md) for the current architecture and rollout gates.
+
 | | |
 |---|---|
 | Status | Draft for review |

@@ -6,7 +6,7 @@ Every name should say what the thing is and belong to Daymark. No names borrowed
 | Kind | Name |
 |---|---|
 | Compose project | `daymark` (set with `name:` at the top of each compose file) |
-| Containers | `daymark-postgres`, `daymark-redis`, `daymark-worker`, `daymark-api`, `daymark-proton-bridge`, `daymark-llm`, `daymark-search` |
+| OCI containers | `daymark-postgres`, `daymark-redis`, `daymark-worker`, `daymark-api`, `daymark-llm`, `daymark-search` |
 | Volumes | `daymark-postgres-data`, `daymark-redis-data` |
 | Network | `daymark-net` |
 | Database and user | `daymark` |
