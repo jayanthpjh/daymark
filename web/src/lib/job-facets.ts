@@ -1,5 +1,8 @@
 // What the Discover filter pills and the job cards say about a job: level, workplace, type, skills, visa.
 // Uses the fields the collector already stored; where one is missing it is read from the title, location and description.
+import { ROLE_FAMILIES, roleFamiliesForTitle } from '../../../job-sources/role-families.mjs';
+export { ROLE_FAMILIES };
+export const familyIdsOf = (job: any): string[] => Array.isArray(job.roleFamilies) && job.roleFamilies.length ? job.roleFamilies : roleFamiliesForTitle(job.role || '');
 export type Level = 'Internship' | 'Entry Level' | 'Mid Level' | 'Experienced';
 export type Workplace = 'Remote' | 'Hybrid' | 'Onsite';
 export type JobType = 'Full Time' | 'Part Time' | 'Contract';
@@ -50,15 +53,17 @@ export const facetsOf = (job: any): Facets => ({ level: levelOf(job), workplace:
 export const LEVELS: Level[] = ['Internship', 'Entry Level', 'Experienced'];
 export const WORKPLACES: Workplace[] = ['Remote', 'Hybrid', 'Onsite'];
 export const TYPES: JobType[] = ['Contract', 'Part Time', 'Full Time'];
-export const FRESHNESS: { label: string; days: number }[] = [{ label: '24h', days: 1 }, { label: '7d', days: 7 }, { label: '14d', days: 14 }, { label: '30d', days: 30 }];
+export const FRESHNESS: { label: string; days: number }[] = [{ label: 'Past 6 hours', days: 0.25 }, { label: '24h', days: 1 }, { label: '7d', days: 7 }, { label: '14d', days: 14 }, { label: '30d', days: 30 }];
 
-export interface PillFilters { levels: string[]; workplaces: string[]; types: string[]; sponsors: boolean }
-export const emptyPills = (): PillFilters => ({ levels: [], workplaces: [], types: [], sponsors: false });
+export interface PillFilters { levels: string[]; workplaces: string[]; types: string[]; roleFamilies: string[]; sponsors: boolean }
+export const emptyPills = (): PillFilters => ({ levels: [], workplaces: [], types: [], roleFamilies: [], sponsors: false });
 /** Within a group any chosen pill may match; across groups all must. A job with an unknown value in a chosen group is left out. */
 export function matchesPills(job: any, pills: PillFilters): boolean {
   const f = facetsOf(job);
   const pick = (chosen: string[], value: string) => !chosen.length || chosen.includes(value) || (chosen.includes('Experienced') && value === 'Mid Level');
-  return pick(pills.levels, f.level) && pick(pills.workplaces, f.workplace) && pick(pills.types, f.type) && (!pills.sponsors || f.sponsors);
+  const familyIds = familyIdsOf(job);
+  const selectedFamiliesMatch = !pills.roleFamilies.length || familyIds.some(id => pills.roleFamilies.includes(id)) || (!familyIds.length && pills.roleFamilies.includes('other'));
+  return pick(pills.levels, f.level) && pick(pills.workplaces, f.workplace) && pick(pills.types, f.type) && selectedFamiliesMatch && (!pills.sponsors || f.sponsors);
 }
 // Tsenta-style pastel card tints (colors live in index.css as .tint-0 to .tint-5, light and dark), chosen by company so it always looks the same.
 export const TINT_COUNT = 6;

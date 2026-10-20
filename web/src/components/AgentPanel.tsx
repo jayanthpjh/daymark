@@ -5,6 +5,7 @@ import { MessageSquareMore, X } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, useDaymarkState } from '@/api/client';
 import { Button, Textarea } from '@/components/ui/primitives';
+import { cn } from '@/lib/cn';
 
 type Entry = { id: string; role: string; text: string; results?: any[]; context?: any; status?: string; waiting?: { id: string; summary: string; name?: string }[] };
 type Approval = { id: string; action: string; summary: string; status: string; outcome?: { message: string; link?: string } };
@@ -35,15 +36,23 @@ function ApprovalCard({ id, summary, approval, onNavigate, onDone }: { id: strin
 }
 // One mounted conversation shared by the floating launcher and expanded panel.
 export function AgentPanel({ children }: { children: ReactNode }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(() => {
+    const desktop = window.matchMedia('(min-width: 1100px)').matches;
+    try { return desktop && localStorage.getItem('dm.assistant.open') !== '0'; } catch { return desktop; }
+  });
   const [wide, setWide] = useState(false);
-  const [desktop, setDesktop] = useState(() => window.matchMedia('(min-width: 1280px)').matches);
+  const [desktop, setDesktop] = useState(() => window.matchMedia('(min-width: 1100px)').matches);
   useEffect(() => {
-    const media = window.matchMedia('(min-width: 1280px)');
-    const update = () => setDesktop(media.matches);
+    const media = window.matchMedia('(min-width: 1100px)');
+    const update = () => {
+      setDesktop(media.matches);
+      if (!media.matches) setOpen(false);
+      else { try { setOpen(localStorage.getItem('dm.assistant.open') !== '0'); } catch { setOpen(true); } }
+    };
     media.addEventListener('change', update);
     return () => media.removeEventListener('change', update);
   }, []);
+  const setDesktopOpen = (value: boolean) => { setOpen(value); try { localStorage.setItem('dm.assistant.open', value ? '1' : '0'); } catch { /* private mode */ } };
   const [input, setInput] = useState('');
   const [conversationId,setConversationId]=useState('');
   const [conversations,setConversations]=useState<any[]>([]);
@@ -66,7 +75,7 @@ export function AgentPanel({ children }: { children: ReactNode }) {
   const job = data?.jobs.find(j => j.id === jobId);
   useEffect(() => {
     const toggle = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'j') { e.preventDefault(); setOpen(v => !v); }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'j') { e.preventDefault(); setOpen(v => { const next = !v; try { localStorage.setItem('dm.assistant.open', next ? '1' : '0'); } catch { /* private mode */ } return next; }); }
     };
     window.addEventListener('keydown', toggle);
     return () => window.removeEventListener('keydown', toggle);
@@ -117,7 +126,7 @@ export function AgentPanel({ children }: { children: ReactNode }) {
   const content = <>
     <div className="flex items-center justify-between gap-2">
       <h2 id="assistant-title" className="text-lg font-semibold">Daymark assistant</h2>
-      <div className="flex gap-2"><Button size="sm" onClick={() => setWide(v => !v)}>{wide ? 'Compact' : 'Expand'}</Button><Button size="icon" variant="ghost" aria-label="Close assistant" onClick={() => setOpen(false)}><X size={18} /></Button></div>
+      <div className="flex gap-2"><Button size="sm" onClick={() => setWide(v => !v)}>{wide ? 'Compact' : 'Expand'}</Button><Button size="icon" variant="ghost" aria-label="Close assistant" onClick={() => setDesktopOpen(false)}><X size={18} /></Button></div>
     </div>
     <div className="mt-3 flex gap-2"><label className="min-w-0 flex-1"><span className="sr-only">Saved conversation</span><select aria-label="Saved conversation" disabled={busy||loading} value={conversationId} onChange={e=>void load(e.target.value)} className="h-10 w-full rounded-control border border-line bg-bg px-2 text-sm"><option value="" disabled>Choose a conversation</option>{conversations.map(c=><option key={c.id} value={c.id}>{c.title}</option>)}</select></label><Button size="sm" disabled={busy||loading} onClick={()=>void newChat()}>New chat</Button></div>
     <p id="assistant-description" className="mt-2 text-muted">Your job search, one step at a time. Find answers and review your next move.</p>
@@ -128,7 +137,11 @@ export function AgentPanel({ children }: { children: ReactNode }) {
     </div>}
     <div className="my-3 min-h-0 flex-1 overflow-y-auto" role="log" aria-label="Conversation" aria-relevant="additions">
       {loading&&<p role="status" className="py-3 text-muted">Loading saved conversation…</p>}
-      {!loading&&entries.length === 0 && <div className="py-6"><h3 className="font-medium">Let’s move your search forward.</h3><p className="mt-2 text-muted">Find a saved role, understand an application, or see what needs your attention.</p></div>}
+      {!loading&&entries.length === 0 && <div className="py-6"><h3 className="font-medium">Let’s move your search forward.</h3><p className="mt-2 text-muted">Find a saved role, understand an application, or see what needs your attention.</p><div className="mt-4 grid gap-2" aria-label="Suggested prompts">{[
+        ['Explain my recommendations', 'Explain why these jobs match my profile.'],
+        ['Find my next step', 'Which application needs my attention next?'],
+        [job ? 'Prepare for this role' : 'Review my top matches', job ? `Help me prepare for ${job.company} · ${job.role}.` : 'Show my best saved job matches.'],
+      ].map(([label, prompt]) => <Button key={label} variant="secondary" size="sm" className="justify-start whitespace-normal text-left" onClick={() => { setInput(prompt); document.getElementById('assistant-message')?.focus(); }}>{label}</Button>)}</div><p className="mt-2 text-xs text-muted">Suggestions fill the message box; they are not sent until you choose Ask Daymark.</p></div>}
       {entries.map(entry => <article key={`${entry.role}-${entry.id}`} className="mb-4 border-b border-line pb-4"><h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">{entry.role}</h3><p className="whitespace-pre-wrap">{entry.text}</p>{entry.context?.company&&<p className="mt-1 text-xs text-muted">About {entry.context.company} · {entry.context.role}</p>}{entry.results?.map((r, i) => <div key={i} className="mt-3 rounded-control border border-line p-3">
         <p className="text-sm font-medium">{r.name.replaceAll('_', ' ')} · {r.status === 'done' ? 'Read complete' : r.status}</p>
         {r.result?.navigation && <p className="text-sm text-muted">{r.result.company} · {r.result.navigation.section}</p>}
@@ -148,9 +161,10 @@ export function AgentPanel({ children }: { children: ReactNode }) {
     </form>
     <p className="mt-2 text-xs text-muted">Conversations and action results are saved in Daymark. Unsent text stays in this browser tab.</p>
   </>;
-  return <div className="flex h-full min-w-0">
-    <div className="min-w-0 flex-1">{children}</div>
-    {!open && <Button className="fixed bottom-20 right-4 z-30 shadow-lg" variant="primary" aria-label="Open Daymark assistant" aria-expanded={false} onClick={() => setOpen(true)}><MessageSquareMore size={17} />Assistant</Button>}
-    {desktop ? open && <aside aria-labelledby="assistant-title" className={`flex h-full shrink-0 flex-col border-l border-line bg-surface p-4 ${wide ? 'w-[480px]' : 'w-[360px]'}`}>{content}</aside> : <Dialog.Root open={open} onOpenChange={setOpen}><Dialog.Portal><Dialog.Overlay className="fixed inset-0 z-40 bg-black/50" /><Dialog.Content aria-describedby="assistant-description" className="fixed inset-y-0 right-0 z-50 flex w-full max-w-lg flex-col bg-surface p-4 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-xl"><Dialog.Title className="sr-only">Application assistant</Dialog.Title>{content}</Dialog.Content></Dialog.Portal></Dialog.Root>}
+  return <div className="application-workbench flex h-full min-w-0">
+    {desktop ? open && <aside aria-labelledby="assistant-title" className={`flex h-full shrink-0 flex-col border-r border-line bg-surface p-4 ${wide ? 'w-[400px]' : 'w-[320px]'}`}>{content}</aside> : <Dialog.Root open={open} onOpenChange={setOpen}><Dialog.Portal><Dialog.Overlay className="fixed inset-0 z-40 bg-black/50" /><Dialog.Content aria-describedby="assistant-description" className="fixed inset-y-0 left-0 z-50 flex w-full max-w-sm flex-col bg-surface p-4 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-xl"><Dialog.Title className="sr-only">Daymark assistant</Dialog.Title>{content}</Dialog.Content></Dialog.Portal></Dialog.Root>}
+    <div className="relative min-w-0 flex-1">{children}
+      {!open && <Button className={cn('fixed z-30 shadow-lg', desktop ? 'bottom-4 left-4' : 'bottom-20 right-4')} variant="primary" aria-label="Open Daymark assistant" aria-expanded={false} onClick={() => setDesktopOpen(true)}><MessageSquareMore size={17} />Assistant</Button>}
+    </div>
   </div>;
 }

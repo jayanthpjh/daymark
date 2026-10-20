@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { placeOf, emptyPills, facetsOf, levelOf, matchesPills, skillsOf, sponsorsVisa, tintIndex, typeOf, workplaceOf } from '../job-facets';
+import { placeOf, emptyPills, facetsOf, FRESHNESS, levelOf, matchesPills, skillsOf, sponsorsVisa, tintIndex, typeOf, workplaceOf } from '../job-facets';
 import { defaultJobFilters, filterJobs } from '../ui-model';
 
 describe('level', () => {
@@ -75,12 +75,33 @@ describe('pill filters', () => {
   it('Experienced also takes mid-level roles', () => {
     expect(matchesPills({ role: 'Data Engineer', yearsExperience: 3 }, { ...emptyPills(), levels: ['Experienced'] })).toBe(true);
   });
+  it('filters role families, preserves unknowns under Other, and leaves unknowns visible by default', () => {
+    expect(matchesPills({ role: 'Machine Learning Engineer' }, { ...emptyPills(), roleFamilies: ['data-science-ml'] })).toBe(true);
+    expect(matchesPills({ role: 'Chief Unicorn' }, { ...emptyPills(), roleFamilies: ['other'] })).toBe(true);
+    expect(matchesPills({ role: 'Chief Unicorn' }, emptyPills())).toBe(true);
+    expect(matchesPills({ role: 'Chief Unicorn' }, { ...emptyPills(), roleFamilies: ['software-engineering'] })).toBe(false);
+  });
 });
 describe('tint', () => {
   it('is stable per company and within range', () => {
     expect(tintIndex('Stripe')).toBe(tintIndex('Stripe'));
     for (const c of ['A', 'Stripe', 'Zen Technologies', '']) expect(tintIndex(c)).toBeGreaterThanOrEqual(0), expect(tintIndex(c)).toBeLessThan(6);
     expect(facetsOf({ role: 'x' }).skills).toEqual([]);
+  });
+});
+
+describe('freshness options', () => {
+  it('offers a visible six-hour window that the existing age filter can apply', () => {
+    expect(FRESHNESS).toContainEqual({ label: 'Past 6 hours', days: 0.25 });
+    const now = Date.parse('2026-10-20T12:00:00Z');
+    const at = (ms: number) => new Date(now - ms).toISOString();
+    const jobs = [
+      { id: 'inside', posted: at(5 * 60 * 60 * 1000) },
+      { id: 'boundary', posted: at(6 * 60 * 60 * 1000) },
+      { id: 'outside', posted: at(6 * 60 * 60 * 1000 + 1) },
+      { id: 'first-seen', posted: '', first_seen_at: at(2 * 60 * 60 * 1000) },
+    ];
+    expect(filterJobs(jobs, { ...defaultJobFilters, age: '0.25' }, [], [], now).map(j => j.id)).toEqual(['first-seen', 'inside', 'boundary']);
   });
 });
 

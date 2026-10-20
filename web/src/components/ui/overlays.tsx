@@ -5,12 +5,12 @@ import { X } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { Button } from './primitives';
 
-export function Modal({ open, onOpenChange, title, description, children, footer, side }: { open: boolean; onOpenChange: (o: boolean) => void; title: string; description?: string; children?: React.ReactNode; footer?: React.ReactNode; side?: boolean }) {
+export function Modal({ open, onOpenChange, title, description, children, footer, side, wide }: { open: boolean; onOpenChange: (o: boolean) => void; title: string; description?: string; children?: React.ReactNode; footer?: React.ReactNode; side?: boolean; wide?: boolean }) {
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-40 bg-black/30" />
-        <Dialog.Content aria-describedby={description ? undefined : undefined} className={cn('fixed z-50 flex flex-col bg-surface shadow-xl focus:outline-none', side ? 'inset-y-0 right-0 w-full max-w-[520px] border-l border-line' : 'left-1/2 top-1/2 max-h-[calc(100dvh-32px)] w-[calc(100%-32px)] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-card border border-line')}>
+        <Dialog.Content className={cn('fixed z-50 flex flex-col bg-surface shadow-xl focus:outline-none', side ? 'inset-y-0 right-0 w-full max-w-[520px] border-l border-line' : `left-1/2 top-1/2 max-h-[calc(100dvh-32px)] w-[calc(100%-32px)] ${wide ? 'max-w-5xl' : 'max-w-md'} -translate-x-1/2 -translate-y-1/2 rounded-card border border-line`)}>
           <div className="flex items-start justify-between gap-3 border-b border-line px-4 py-3">
             <div><Dialog.Title className="text-[15px] font-semibold">{title}</Dialog.Title>{description ? <Dialog.Description className="text-muted">{description}</Dialog.Description> : <Dialog.Description className="sr-only">{title}</Dialog.Description>}</div>
             <Dialog.Close asChild><Button variant="ghost" size="icon" aria-label="Close"><X size={16} /></Button></Dialog.Close>

@@ -30,7 +30,7 @@ test('the token set defines the type scale, elevation, spacing base, motion and 
   const sizes=[...css.matchAll(/--text-(xs|sm|base|lg|xl|2xl):\s*(\d+)px/g)].map(m=>Number(m[2]));
   assert.ok(Math.min(...sizes)>=12,'nothing smaller than 12px');
 });
-test('reduced motion turns animation and transitions off',()=>{assert.match(css,/prefers-reduced-motion: reduce[\s\S]*animation: none[\s\S]*transition: none/);});
+test('reduced motion shortens animation and transition durations',()=>{assert.match(css,/prefers-reduced-motion: reduce[\s\S]*animation: none[\s\S]*transition-duration: 0\.01ms[\s\S]*animation-duration: 0\.01ms/);});
 test('no screen hard-codes white or black fills that would break the dark theme',()=>{
   const walk=dir=>fs.readdirSync(dir,{withFileTypes:true}).flatMap(e=>e.isDirectory()?walk(`${dir}/${e.name}`):[`${dir}/${e.name}`]);
   for(const file of walk(new URL('../web/src',import.meta.url).pathname).filter(f=>/\.tsx$/.test(f))){

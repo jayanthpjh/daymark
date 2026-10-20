@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, ArrowRight, ExternalLink } from 'lucide-react';
+import { ArrowLeft, ArrowRight } from 'lucide-react';
 import { CompanyLogo } from '@/components/CompanyLogo';
 import { MatchRing } from '@/components/MatchRing';
 import { api, useApiMutation, useDaymarkState } from '@/api/client';
@@ -8,6 +8,7 @@ import { facetsOf, placeOf } from '@/lib/job-facets';
 import { jobStatus } from '@/lib/ui-model';
 import { Badge, Button, Card, EmptyState, ErrorState, Skeleton } from '@/components/ui/primitives';
 import { relTime } from '@/lib/format';
+import { JobSourceLink } from '@/components/JobSourceLink';
 
 const Pill = ({ children }: { children: React.ReactNode }) => <span className="rounded-full border border-line bg-surface px-3 py-1 text-[13px]">{children}</span>;
 const Fact = ({ label, value }: { label: string; value: React.ReactNode }) => <div className="flex items-baseline justify-between gap-4 border-b border-line py-2.5 last:border-0"><dt className="text-[13px] text-muted">{label}</dt><dd className="text-right text-[13.5px] font-medium">{value || 'Not listed'}</dd></div>;
@@ -54,7 +55,7 @@ export function JobDetail() {
               : <Button variant="primary" className="mt-4 w-full rounded-full" disabled={prepare.isPending || Boolean(job.closedAt)} onClick={() => prepare.mutate(undefined, { onSuccess: () => nav(`/applications/${job.id}`) })}>{prepare.isPending ? 'Preparing…' : 'Prepare application'}<ArrowRight size={15} aria-hidden /></Button>}
             {prepare.isError && <p role="alert" className="mt-2 text-[13px] text-danger">{(prepare.error as Error).message}</p>}
             <div className="mt-3 flex items-center justify-between gap-2 text-[13px]">
-              {job.url && <a className="inline-flex items-center gap-1 text-brand hover:underline" href={job.url} target="_blank" rel="noreferrer noopener">Employer posting<ExternalLink size={12} aria-hidden /></a>}
+              <JobSourceLink job={job} className="text-[13px]" />
               {!started && !job.closedAt && String(job.id).startsWith('ats-') && <button type="button" className="text-muted underline" onClick={check}>Check still open</button>}
             </div>
             {note && <p role="status" className="mt-2 text-[12.5px] text-muted">{note}</p>}

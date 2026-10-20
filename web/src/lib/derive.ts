@@ -33,12 +33,23 @@ export function applicationRows(state: DaymarkState): AppRow[] {
 }
 
 function nextAction(status: string, fill?: Task, prepare?: Task) {
+  if (status === 'not_started') return '—';
+  if (status === 'cancelled' || status === 'paused') return '—';
   if (fill && isAwaitingReview(fill)) return 'Review and send';
-  if (fill?.status === 'needs_you') return fill.checkpoint?.pauseReason === 'verification' ? 'Verify with employer' : 'Answer questions';
+  if (fill?.status === 'needs_you') {
+    if (isAnswerCheckpoint(fill)) return 'Answer questions';
+    if (fill.checkpoint?.pauseReason === 'verification') return 'Verify with employer';
+    if (fill.reviewState?.kind === 'authentication_required' || fill.checkpoint?.pauseReason === 'entry') return 'Sign in to continue';
+    return 'Continue application';
+  }
   if (prepare?.hasArtifacts && prepare.review?.approvalStatus !== 'approved') return 'Review resume';
   if (status === 'failed') return 'Retry';
   if (['queued', 'running', 'in_progress'].includes(status)) return 'Wait';
   return '—';
+}
+
+function isAnswerCheckpoint(task: Task) {
+  return task.reviewState?.kind === 'answers_needed' || task.checkpoint?.pauseReason === 'answers' || Boolean(task.checkpoint?.unresolvedIds?.length);
 }
 
 export interface NeedsYou { id: string; jobId?: string; title: string; detail: string; urgency: number; href: string }
@@ -50,7 +61,11 @@ export function needsYou(state: DaymarkState): NeedsYou[] {
     const j = jobs.get(t.jobId || '');
     const name = `${j?.company || t.company || 'Company'} · ${j?.role || t.role || 'Role'}`;
     if (isAwaitingReview(t)) items.push({ id: t.id, jobId: t.jobId, title: name, detail: 'Filled and ready: review before submit', urgency: 1, href: `/applications/${t.jobId}` });
-    else if (t.status === 'needs_you') items.push({ id: t.id, jobId: t.jobId, title: name, detail: t.checkpoint?.pauseReason === 'verification' ? 'Employer verification needed' : `${t.checkpoint?.unresolvedIds?.length || 'Some'} question(s) need your answer`, urgency: t.checkpoint?.pauseReason === 'verification' ? 1 : 2, href: t.checkpoint?.pauseReason === 'verification' ? `/applications/${t.jobId}` : '/questions' });
+    else if (t.status === 'needs_you') {
+      const answers = isAnswerCheckpoint(t);
+      const detail = answers ? t.message || `${t.checkpoint?.unresolvedIds?.length || 'Some'} question(s) need your answer` : t.message || (t.checkpoint?.pauseReason === 'verification' ? 'Employer verification needed' : 'Continue this step in the application workspace');
+      items.push({ id: t.id, jobId: t.jobId, title: name, detail, urgency: t.checkpoint?.pauseReason === 'verification' ? 1 : 2, href: answers ? '/questions' : `/applications/${t.jobId}` });
+    }
     else if (t.status === 'failed') items.push({ id: t.id, jobId: t.jobId, title: name, detail: 'Failed: open to retry', urgency: 3, href: `/applications/${t.jobId}` });
   }
   return items.sort((a, b) => a.urgency - b.urgency);

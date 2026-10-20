@@ -27,13 +27,13 @@ export function streamModel(state, now = Date.now()) {
     { id: 'discover', label: 'Discover', sub: `${jobs.length} role${jobs.length === 1 ? '' : 's'}`, count: jobs.length, status: state_(byType('collect').some(live), false, jobs.length) },
     { id: 'score', label: 'Score', sub: `${jobs.filter(job => job.match != null).length} matched`, count: jobs.filter(job => job.match != null).length, status: state_(false, false, jobs.some(job => job.match != null)) },
     { id: 'tailor', label: 'Tailor', sub: `${prepare.filter(task => task.hasArtifacts).length} ready`, count: prepare.length, status: state_(prepare.some(live), false, prepare.length) },
-    { id: 'fill', label: 'Fill', sub: `${fill.length} form${fill.length === 1 ? '' : 's'}`, count: fill.length, status: state_(fill.some(task => live(task) && task.stage !== 'Submitting'), false, fill.length) },
+    { id: 'fill', label: 'Fill', sub: stuck.filter(task => task.type === 'fill').length ? `${stuck.filter(task => task.type === 'fill').length} waiting` : `${fill.length} form${fill.length === 1 ? '' : 's'}`, count: fill.length, status: state_(fill.some(task => live(task) && task.stage !== 'Submitting'), stuck.some(task => task.type === 'fill'), fill.length) },
   ];
   if (reviewOn || awaiting.length) stages.push({ id: 'review', label: 'Your review', sub: awaiting.length ? `${awaiting.length} waiting` : 'none waiting', count: awaiting.length, status: state_(false, awaiting.length > 0, 0) });
   stages.push({ id: 'submit', label: 'Submit', sub: `${submittedJobs.size} sent`, count: submittedJobs.size, status: state_(submitting, false, submittedJobs.size) });
 
   const verb = { collect: 'Discovering roles', prepare: 'Tailoring', fill: 'Filling' };
-  const events = [...tasks].sort((a, b) => time(b) - time(a)).slice(0, 6).map(task => {
+  const events = [...tasks].sort((a, b) => time(b) - time(a)).map(task => {
     const role = task.role || 'Application', at = time(task) || now;
     let badge = 'DONE', title, detail = task.message || '';
     if (task.type === 'collect') { title = live(task) ? 'Discovering roles' : task.status === 'failed' ? 'Collection failed' : 'Discovered roles'; badge = live(task) ? 'RUNNING' : task.status === 'failed' ? 'ACTION' : 'DONE'; }
@@ -52,7 +52,7 @@ export function streamModel(state, now = Date.now()) {
     const urgent = (mail.categories || []).some(c => needsYou.includes(c));
     events.push({ id: 'mail-' + mail.id, jobId: mail.jobId, type: 'mail', title: urgent ? `Recruiter reply detected · ${mail.company || ''}` : `${(mail.categories || ['Mail'])[0]} · ${mail.company || ''}`, detail: urgent ? 'Forwarded to Inbox · needs you' : (mail.statusChange ? `Status moved to ${mail.statusChange}` : (mail.subject || '')), badge: urgent ? 'ACTION' : 'DONE', at: Date.parse(mail.at || '') || now, status: 'mail', href: 'inbox' });
   }
-  events.sort((a, b) => b.at - a.at);
+  events.sort((a, b) => Number(b.badge === 'ACTION') - Number(a.badge === 'ACTION') || b.at - a.at);
   events.splice(7);
   const todayWork = prepare.filter(task => new Date(task.createdAt || 0).toDateString() === today);
   const done = todayWork.filter(task => submittedJobs.has(task.jobId) || ['completed'].includes(task.status)).length;

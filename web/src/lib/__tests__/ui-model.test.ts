@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { defaultJobFilters, filterJobs } from '../ui-model';
+import { defaultJobFilters, filterJobs, jobsForDisposition, jobStatus } from '../ui-model';
 
 const NOW = Date.parse('2026-10-20T12:00:00Z');
 const day = (n: number) => new Date(NOW - n * 86_400_000).toISOString();
@@ -11,6 +11,16 @@ describe('closed jobs', () => {
     const jobs = [job('open'), job('gone', { closedAt: day(1) })];
     expect(run(jobs)).toEqual(['open']);
     expect(run(jobs, { showClosed: true }).sort()).toEqual(['gone', 'open']);
+  });
+});
+describe('application status', () => {
+  it('shows the latest waiting task instead of a stale manual application status', () => {
+    const waiting = { jobId: 'capital-one', type: 'fill', status: 'needs_you', updatedAt: day(0) };
+    const stale = { jobId: 'capital-one', status: 'in_progress', updatedAt: day(1) };
+    expect(jobStatus(job('capital-one'), [waiting], [stale])).toBe('needs_you');
+  });
+  it('keeps a user-marked application disposition after its tasks are paused', () => {
+    expect(jobStatus(job('capital-one'), [{ jobId: 'capital-one', type: 'fill', status: 'paused' }], [{ jobId: 'capital-one', status: 'not_started' }])).toBe('not_started');
   });
 });
 describe('age filter', () => {
@@ -42,5 +52,18 @@ describe('freshness filters', () => {
   });
   it('a job never confirmed open does not pass a confirmed-open filter', () => {
     expect(run([job('never', { posted: hours(1) })], { seen: '72' })).toEqual([]);
+  });
+});
+
+describe('saved and passed jobs', () => {
+  const jobs = [job('open'), job('saved'), job('passed')];
+  const dispositions = { saved: 'saved' as const, passed: 'passed' as const };
+  it('hides passed jobs from the default feed while keeping saved roles visible', () => {
+    expect(jobsForDisposition(jobs, dispositions).map(j => j.id)).toEqual(['open', 'saved']);
+  });
+  it('shows the saved and passed views and supports restoring a passed role', () => {
+    expect(jobsForDisposition(jobs, dispositions, 'saved').map(j => j.id)).toEqual(['saved']);
+    expect(jobsForDisposition(jobs, dispositions, 'passed').map(j => j.id)).toEqual(['passed']);
+    expect(jobsForDisposition(jobs, { saved: 'saved' }, 'all').map(j => j.id)).toEqual(['open', 'saved', 'passed']);
   });
 });

@@ -33,7 +33,8 @@ export function Workspace() {
     if (!q.data) return null;
     const job = q.data.jobs.find(j => j.id === jobId);
     if (!job) return { job: null } as any;
-    return { job, run: applicationRun(q.data.tasks, jobId), pres: applicationPresentationModel(q.data.tasks, jobId), status: jobStatus(job, q.data.tasks, q.data.applications) };
+    const status = jobStatus(job, q.data.tasks, q.data.applications);
+    return { job, run: applicationRun(q.data.tasks, jobId), pres: applicationPresentationModel(q.data.tasks, jobId, status), status };
   }, [q.data, jobId]);
 
   if (q.isError) return <ErrorState error={q.error} onRetry={() => q.refetch()} />;

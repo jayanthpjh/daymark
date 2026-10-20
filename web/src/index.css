@@ -17,11 +17,11 @@
   --color-ink: #101828;
   --color-muted: #526174;
   --color-faint: #5f6e84;
-  --color-brand: #1762cf;
-  --color-brand-hover: #104fae;
-  --color-brand-soft: #eaf3ff;
+  --color-brand: #173b2d;
+  --color-brand-hover: #244e3c;
+  --color-brand-soft: #eaf2ed;
   --color-on-brand: #ffffff;         /* text on a solid brand fill */
-  --color-focus: #1762cf;
+  --color-focus: #2f7a57;
   --color-success: #177245;
   --color-success-soft: #e6f5ec;
   --color-warning: #8a5a00;
@@ -64,7 +64,7 @@
   :root:not([data-theme="light"]) {
     --color-bg: #0b1220; --color-surface: #111a2b; --color-muted-surface: #172238; --color-line: #243049; --color-line-strong: #3a4a68; --color-control: #7f8fa8;
     --color-ink: #e8eef9; --color-muted: #a9b6cc; --color-faint: #97a6bf;
-    --color-brand: #6aa8ff; --color-brand-hover: #8abaff; --color-brand-soft: #14284a; --color-on-brand: #06142e; --color-focus: #8ab8ff;
+    --color-brand: #77d4a0; --color-brand-hover: #9be4b9; --color-brand-soft: #12301f; --color-on-brand: #061b10; --color-focus: #77d4a0;
     --color-success: #5fd394; --color-success-soft: #12301f; --color-warning: #f0b84a; --color-warning-soft: #33260a;
     --color-danger: #ff8a80; --color-danger-soft: #3a1512; --color-info: #7db6ff; --color-info-soft: #132a47;
     --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.5); --shadow-md: 0 4px 12px rgb(0 0 0 / 0.5); --shadow-lg: 0 10px 30px rgb(0 0 0 / 0.55); --shadow-xl: 0 18px 48px rgb(0 0 0 / 0.6);
@@ -74,7 +74,7 @@
 :root[data-theme="dark"] {
   --color-bg: #0b1220; --color-surface: #111a2b; --color-muted-surface: #172238; --color-line: #243049; --color-line-strong: #3a4a68; --color-control: #7f8fa8;
   --color-ink: #e8eef9; --color-muted: #a9b6cc; --color-faint: #97a6bf;
-  --color-brand: #6aa8ff; --color-brand-hover: #8abaff; --color-brand-soft: #14284a; --color-on-brand: #06142e; --color-focus: #8ab8ff;
+  --color-brand: #77d4a0; --color-brand-hover: #9be4b9; --color-brand-soft: #12301f; --color-on-brand: #061b10; --color-focus: #77d4a0;
   --color-success: #5fd394; --color-success-soft: #12301f; --color-warning: #f0b84a; --color-warning-soft: #33260a;
   --color-danger: #ff8a80; --color-danger-soft: #3a1512; --color-info: #7db6ff; --color-info-soft: #132a47;
   --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.5); --shadow-md: 0 4px 12px rgb(0 0 0 / 0.5); --shadow-lg: 0 10px 30px rgb(0 0 0 / 0.55); --shadow-xl: 0 18px 48px rgb(0 0 0 / 0.6);
@@ -82,12 +82,12 @@
 }
 
 html, body, #root { height: 100%; }
-body { margin: 0; background: var(--color-bg); color: var(--color-ink); font: 400 14px/1.6 var(--font-sans); -webkit-font-smoothing: antialiased; }
+body { margin: 0; background: var(--color-bg); color: var(--color-ink); font: 400 16px/1.6 var(--font-sans); -webkit-font-smoothing: antialiased; }
 :focus-visible { outline: var(--focus-ring-width) solid var(--color-focus); outline-offset: var(--focus-ring-offset); }
 button, a { -webkit-tap-highlight-color: transparent; }
 @keyframes shimmer { 0% { background-position: 200% 0 } 100% { background-position: -200% 0 } }
 .skeleton { background: linear-gradient(90deg, var(--color-line) 25%, var(--color-muted-surface) 50%, var(--color-line) 75%); background-size: 200% 100%; animation: shimmer 1.4s linear infinite; border-radius: 6px; }
-@media (prefers-reduced-motion: reduce) { .skeleton { animation: none } * { transition: none !important } }
+@media (prefers-reduced-motion: reduce) { .skeleton { animation: none } :root * { transition-duration: 0.01ms; animation-duration: 0.01ms; } }
 
 /* Respond to the actual workspace width, including when the assistant is docked. */
 .application-workbench { container-type: inline-size; min-width: 0; }
@@ -105,14 +105,27 @@ button, a { -webkit-tap-highlight-color: transparent; }
 }
 
 /* Cards follow available width when the assistant is docked. */
-.job-card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 270px), 1fr)); gap: 16px; }
+.job-board-container { container-type: inline-size; }
+.job-card-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+@container (min-width: 580px) { .job-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@container (min-width: 900px) { .job-card-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@container (min-width: 1240px) { .job-card-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
 
 /* Job card tints: soft pastels. Text stays on the normal ink color, which keeps AA contrast on every tint. */
 .tint-0 { background: #e6f6ec; } .tint-1 { background: #fdf3d2; } .tint-2 { background: #e8eefc; }
 .tint-3 { background: #fde6ea; } .tint-4 { background: #efe8fb; } .tint-5 { background: #e1f4f6; }
+.bg-tint-mint { background: #ddf8e9; }
+.role-family-filter > summary::-webkit-details-marker { display: none; }
+.role-family-filter[open] > summary { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+.role-filter-backdrop { display: none; }
+@media (max-width: 639px) {
+  .role-family-menu { position: fixed; inset: auto 0 0; z-index: 60; width: 100%; max-height: min(78vh, 620px); overflow: auto; border-radius: 18px 18px 0 0; padding: 18px 16px max(18px, env(safe-area-inset-bottom)); }
+  .role-filter-backdrop { display: block; position: fixed; inset: 0; z-index: -1; width: 100vw; height: 100vh; border: 0; background: rgb(0 0 0 / 0.35); }
+}
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) .tint-0 { background: #12301f; } :root:not([data-theme="light"]) .tint-1 { background: #33260a; } :root:not([data-theme="light"]) .tint-2 { background: #132a47; }
   :root:not([data-theme="light"]) .tint-3 { background: #3a1512; } :root:not([data-theme="light"]) .tint-4 { background: #251a3f; } :root:not([data-theme="light"]) .tint-5 { background: #0f2f33; }
 }
 :root[data-theme="dark"] .tint-0 { background: #12301f; } :root[data-theme="dark"] .tint-1 { background: #33260a; } :root[data-theme="dark"] .tint-2 { background: #132a47; }
 :root[data-theme="dark"] .tint-3 { background: #3a1512; } :root[data-theme="dark"] .tint-4 { background: #251a3f; } :root[data-theme="dark"] .tint-5 { background: #0f2f33; }
+:root[data-theme="dark"] .bg-tint-mint { background: #12301f; }

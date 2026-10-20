@@ -23,11 +23,11 @@ colors:
   info: "#1f5fa8"
   info-soft: "#e8f0fa"
 typography:
-  family: "Inter, system-ui, -apple-system, 'Segoe UI', sans-serif"
+  family: "Onest, system-ui, -apple-system, 'Segoe UI', sans-serif"
   mono: "ui-monospace, SFMono-Regular, Menlo, monospace"
   page-title: { fontSize: "22px", fontWeight: 650, letterSpacing: "-0.02em" }
   section-title: { fontSize: "15px", fontWeight: 600 }
-  body: { fontSize: "13.5px", lineHeight: 1.55 }
+  body: { fontSize: "16px", lineHeight: 1.6 }
   label: { fontSize: "12px", fontWeight: 500 }
   caption: { fontSize: "11.5px" }
 rounded: { control: "8px", card: "12px", pill: "999px" }
@@ -37,7 +37,7 @@ layout: { sidebar: "248px", sidebar-collapsed: "64px", content-max: "1240px", to
 
 # Daymark design system
 
-One family (Inter), one accent (forest), neutral surfaces. This replaces the four legacy stylesheets (now in `public-legacy/`, served at `/legacy`). Tokens live in `web/src/index.css` as CSS variables and are exposed to Tailwind as `bg-surface`, `text-muted`, `border-line`, `bg-brand`, etc.
+One family (Onest), one accent (forest), neutral surfaces. This replaces the four legacy stylesheets (now in `public-legacy/`, served at `/legacy`). Tokens live in `web/src/index.css` as CSS variables and are exposed to Tailwind as `bg-surface`, `text-muted`, `border-line`, `bg-brand`, etc.
 
 ## Principles
 - **One application, one current action.** Every record shows its stage and a single primary next action.
